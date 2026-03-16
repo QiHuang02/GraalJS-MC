@@ -28,6 +28,9 @@ java {
     toolchain.languageVersion = JavaLanguageVersion.of(17)
 }
 
+// Enable the Jar-in-Jar system to bundle GraalJS dependencies
+jarJar.enable()
+
 minecraft {
     // The mappings can be changed at any time and must be in the following format.
     // Channel:   Version:
@@ -142,30 +145,31 @@ repositories {
 }
 
 dependencies {
-    // Specify the version of Minecraft to use.
-    // Any artifact can be supplied so long as it has a "userdev" classifier artifact and is a compatible patcher artifact.
-    // The "userdev" classifier will be requested and setup by ForgeGradle.
-    // If the group id is "net.minecraft" and the artifact id is one of ["client", "server", "joined"],
-    // then special handling is done to allow a setup of a vanilla dependency without the use of an external repository.
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
 
-    // Example mod dependency with JEI - using fg.deobf() ensures the dependency is remapped to your development mappings
-    // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
-    // compileOnly fg.deobf("mezz.jei:jei-${mc_version}-common-api:${jei_version}")
-    // compileOnly fg.deobf("mezz.jei:jei-${mc_version}-forge-api:${jei_version}")
-    // runtimeOnly fg.deobf("mezz.jei:jei-${mc_version}-forge:${jei_version}")
+    // GraalJS engine
+    implementation 'org.graalvm.js:js:23.0.2'
+    implementation 'org.graalvm.js:js-scriptengine:23.0.2'
+    implementation 'org.graalvm.sdk:graal-sdk:23.0.2'
+    implementation 'net.bytebuddy:byte-buddy:1.18.5'
 
-    // Example mod dependency using a mod jar from ./libs with a flat dir repository
-    // This maps to ./libs/coolmod-${mc_version}-${coolmod_version}.jar
-    // The group id is ignored when searching -- in this case, it is "blank"
-    // implementation fg.deobf("blank:coolmod-${mc_version}:${coolmod_version}")
+    jarJar(group: 'org.graalvm.js', name: 'js', version: '[23.0,24.0)') {
+        jarJar.pin(it, '23.0.2')
+    }
+    jarJar(group: 'org.graalvm.js', name: 'js-scriptengine', version: '[23.0,24.0)') {
+        jarJar.pin(it, '23.0.2')
+    }
+    jarJar(group: 'org.graalvm.sdk', name: 'graal-sdk', version: '[23.0,24.0)') {
+        jarJar.pin(it, '23.0.2')
+    }
+    jarJar(group: 'net.bytebuddy', name: 'byte-buddy', version: '[1.18.0,1.19.0)') {
+        jarJar.pin(it, '1.18.5')
+    }
 
-    // For more info:
-    // http://www.gradle.org/docs/current/userguide/artifact_dependencies_tutorial.html
-    // http://www.gradle.org/docs/current/userguide/dependency_management.html
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
 
     annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
-
 }
 
 // This block of code expands all declared replace properties in the specified resource targets.
@@ -173,11 +177,19 @@ dependencies {
 // When "copyIdeResources" is enabled, this will also run before the game launches in IDE environments.
 // See https://docs.gradle.org/current/dsl/org.gradle.language.jvm.tasks.ProcessResources.html
 tasks.named('processResources', ProcessResources).configure {
-    var replaceProperties = [minecraft_version   : minecraft_version, minecraft_version_range: minecraft_version_range,
-                             forge_version       : forge_version, forge_version_range: forge_version_range,
-                             loader_version_range: loader_version_range,
-                             mod_id              : mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
-                             mod_authors         : mod_authors, mod_description: mod_description,]
+    var replaceProperties = [
+            minecraft_version   : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            forge_version       : forge_version,
+            forge_version_range: forge_version_range,
+            loader_version_range: loader_version_range,
+            mod_id              : mod_id,
+            mod_name: mod_name,
+            mod_license: mod_license,
+            mod_version: mod_version,
+            mod_authors         : mod_authors,
+            mod_description: mod_description,
+    ]
 
     inputs.properties replaceProperties
 
@@ -204,4 +216,8 @@ tasks.named('jar', Jar).configure {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
+}
+
+tasks.named('test', Test).configure {
+    useJUnitPlatform()
 }
