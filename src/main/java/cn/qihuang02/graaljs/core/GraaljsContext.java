@@ -5,6 +5,7 @@ import cn.qihuang02.graaljs.bridge.AbstractClassAdapter;
 import cn.qihuang02.graaljs.bridge.InterfaceAdapter;
 import cn.qihuang02.graaljs.bridge.ProxyValue;
 import cn.qihuang02.graaljs.typewrap.EnumTypeWrapper;
+import cn.qihuang02.graaljs.typewrap.GenericTypeInfo;
 import cn.qihuang02.graaljs.typewrap.TypeWrapperFactory;
 import cn.qihuang02.graaljs.util.ClassVisibilityContext;
 import org.graalvm.polyglot.Context;
@@ -15,7 +16,9 @@ import org.graalvm.polyglot.proxy.ProxyObject;
 
 import java.io.IOException;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
+import java.lang.reflect.Type;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -37,6 +40,7 @@ public class GraaljsContext {
     private final ScriptType type;
     private final Map<Object, Object> wrappedValueCache;
     private Context context;
+    private ModuleLoader moduleLoader;
 
     public GraaljsContext(GraaljsContextFactory factory, ScriptType type) {
         this.factory = factory;
@@ -56,6 +60,10 @@ public class GraaljsContext {
         return context;
     }
 
+    public ModuleLoader getModuleLoader() {
+        return moduleLoader;
+    }
+
     public void initialize(Map<String, Object> bindings) {
         context = Context.newBuilder("js")
                 .allowHostAccess(org.graalvm.polyglot.HostAccess.ALL)
@@ -65,10 +73,21 @@ public class GraaljsContext {
                 .option("js.nashorn-compat", "false")
                 .build();
 
+        // 初始化模块加载器
+        moduleLoader = new ModuleLoader(this, factory.getScriptRoot());
+
         Value jsBindings = context.getBindings("js");
         for (Map.Entry<String, Object> entry : bindings.entrySet()) {
             jsBindings.putMember(entry.getKey(), javaToJs(entry.getValue()));
         }
+
+        // 绑定 require 到全局作用域
+        jsBindings.putMember("require", (org.graalvm.polyglot.proxy.ProxyExecutable) args -> {
+            if (args.length == 0 || !args[0].isString()) {
+                throw new IllegalArgumentException("require() argument must be a string");
+            }
+            return moduleLoader.require(args[0].asString());
+        });
     }
 
     public void addToScope(String name, Object value) {
@@ -77,11 +96,20 @@ public class GraaljsContext {
 
     public Value eval(Source source) {
         factory.bindCurrentContext(this);
+        // 如果 Source 有关联的文件路径，压入脚本路径栈
+        Path sourcePath = null;
+        if (moduleLoader != null && source.getPath() != null) {
+            sourcePath = Path.of(source.getPath());
+            moduleLoader.pushScriptPath(sourcePath);
+        }
         try {
             return requireContext().eval(source);
         } catch (PolyglotException exception) {
             throw logAndWrapScriptException(source, exception);
         } finally {
+            if (sourcePath != null) {
+                moduleLoader.popScriptPath();
+            }
             factory.clearCurrentContext(this);
         }
     }
@@ -124,6 +152,16 @@ public class GraaljsContext {
     }
 
     public <T> T jsToJava(Object from, Class<T> target) {
+        return jsToJava(from, GenericTypeInfo.of(target));
+    }
+
+    /**
+     * 泛型感知的 JS → Java 转换入口。
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T jsToJava(Object from, GenericTypeInfo targetInfo) {
+        Class<T> target = (Class<T>) targetInfo.rawType();
+
         if (from instanceof Value originalValue && target == Value.class) {
             return target.cast(originalValue);
         }
@@ -150,6 +188,20 @@ public class GraaljsContext {
         if (target == Object.class) {
             return target.cast(normalized);
         }
+
+        // 当有泛型参数时，集合/Map 需要递归转换元素，优先于 isInstance 短路
+        if (targetInfo.hasTypeArguments()) {
+            if (List.class.isAssignableFrom(target) && normalized instanceof List<?> list) {
+                return target.cast(convertList(list, targetInfo));
+            }
+            if (Set.class.isAssignableFrom(target) && normalized instanceof List<?> list) {
+                return target.cast(convertSet(list, targetInfo));
+            }
+            if (Map.class.isAssignableFrom(target) && normalized instanceof Map<?, ?> map) {
+                return target.cast(convertMap(map, targetInfo));
+            }
+        }
+
         if (target.isInstance(normalized)) {
             return target.cast(normalized);
         }
@@ -173,13 +225,13 @@ public class GraaljsContext {
             return convertArray(target, list);
         }
         if (List.class.isAssignableFrom(target) && normalized instanceof List<?> list) {
-            return target.cast(new ArrayList<>(list));
+            return target.cast(convertList(list, targetInfo));
         }
         if (Set.class.isAssignableFrom(target) && normalized instanceof List<?> list) {
-            return target.cast(new LinkedHashSet<>(list));
+            return target.cast(convertSet(list, targetInfo));
         }
         if (Map.class.isAssignableFrom(target) && normalized instanceof Map<?, ?> map) {
-            return target.cast(new LinkedHashMap<>(map));
+            return target.cast(convertMap(map, targetInfo));
         }
         if (target == Optional.class) {
             return target.cast(Optional.of(normalized));
@@ -191,6 +243,14 @@ public class GraaljsContext {
         }
 
         throw new IllegalArgumentException("Unsupported JS to Java conversion: " + normalized.getClass().getName() + " -> " + target.getName());
+    }
+
+    /**
+     * 从反射 Type 转换（便捷入口）。
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T jsToJava(Object from, Type targetType) {
+        return jsToJava(from, GenericTypeInfo.of(targetType));
     }
 
     public <T> T asInterface(Value value, Class<T> interfaceType) {
@@ -231,6 +291,9 @@ public class GraaljsContext {
     }
 
     public void close() {
+        if (moduleLoader != null) {
+            moduleLoader.close();
+        }
         if (context != null) {
             try {
                 context.close();
@@ -247,7 +310,17 @@ public class GraaljsContext {
             Source source = Source.newBuilder("js", path.toFile())
                     .name(factory.resolveScriptDirectory(type).relativize(path).toString())
                     .build();
-            eval(source);
+            // 压入脚本路径以支持 require() 的相对路径解析
+            if (moduleLoader != null) {
+                moduleLoader.pushScriptPath(path);
+            }
+            try {
+                eval(source);
+            } finally {
+                if (moduleLoader != null) {
+                    moduleLoader.popScriptPath();
+                }
+            }
             Graaljs.LOGGER.info("Loaded {} script: {}", type.name().toLowerCase(), path);
         } catch (IOException exception) {
             Graaljs.LOGGER.error("Failed to load script source: {}", path, exception);
@@ -418,6 +491,46 @@ public class GraaljsContext {
             return wrapperFactory.wrap(this, value, componentType);
         }
         return value;
+    }
+
+    private List<?> convertList(List<?> list, GenericTypeInfo targetInfo) {
+        GenericTypeInfo elementInfo = targetInfo.typeArgument(0);
+        if (!targetInfo.hasTypeArguments() || elementInfo.rawType() == Object.class) {
+            return new ArrayList<>(list);
+        }
+        List<Object> result = new ArrayList<>(list.size());
+        for (Object element : list) {
+            result.add(jsToJava(element, elementInfo));
+        }
+        return result;
+    }
+
+    private Set<?> convertSet(List<?> list, GenericTypeInfo targetInfo) {
+        GenericTypeInfo elementInfo = targetInfo.typeArgument(0);
+        if (!targetInfo.hasTypeArguments() || elementInfo.rawType() == Object.class) {
+            return new LinkedHashSet<>(list);
+        }
+        Set<Object> result = new LinkedHashSet<>();
+        for (Object element : list) {
+            result.add(jsToJava(element, elementInfo));
+        }
+        return result;
+    }
+
+    private Map<?, ?> convertMap(Map<?, ?> map, GenericTypeInfo targetInfo) {
+        GenericTypeInfo keyInfo = targetInfo.typeArgument(0);
+        GenericTypeInfo valueInfo = targetInfo.typeArgument(1);
+        if (!targetInfo.hasTypeArguments()
+                || (keyInfo.rawType() == Object.class && valueInfo.rawType() == Object.class)) {
+            return new LinkedHashMap<>(map);
+        }
+        Map<Object, Object> result = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            Object key = jsToJava(entry.getKey(), keyInfo);
+            Object value = jsToJava(entry.getValue(), valueInfo);
+            result.put(key, value);
+        }
+        return result;
     }
 
     private Object convertRecord(Class<?> target, Map<?, ?> values) {

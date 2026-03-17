@@ -7,29 +7,21 @@ import cn.qihuang02.graaljs.binding.EventBusAPI;
 import cn.qihuang02.graaljs.binding.JavaAPI;
 import cn.qihuang02.graaljs.binding.JavaAdapterAPI;
 import cn.qihuang02.graaljs.binding.RuntimeAPI;
+import cn.qihuang02.graaljs.binding.SchedulerAPI;
 import cn.qihuang02.graaljs.bridge.CachedClassStorage;
 import cn.qihuang02.graaljs.bridge.HostBridgeRegistry;
 import cn.qihuang02.graaljs.bridge.JavaPackageProxy;
 import cn.qihuang02.graaljs.error.ErrorReporter;
 import cn.qihuang02.graaljs.error.LoggingErrorReporter;
+import cn.qihuang02.graaljs.minecraft.MinecraftTypeWrappers;
 import cn.qihuang02.graaljs.typewrap.DirectTypeWrapperFactory;
 import cn.qihuang02.graaljs.typewrap.TypeWrapperFactory;
 import cn.qihuang02.graaljs.typewrap.TypeWrapperValidator;
 import cn.qihuang02.graaljs.typewrap.TypeWrappers;
 import cn.qihuang02.graaljs.util.ClassVisibilityContext;
-import net.minecraft.core.BlockPos;
-import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.network.chat.Component;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.Bootstrap;
-import net.minecraft.world.item.Item;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Items;
-import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.fml.loading.FMLPaths;
 
 import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
 import java.lang.reflect.RecordComponent;
 import java.nio.file.Path;
 import java.util.EnumMap;
@@ -58,6 +50,7 @@ public class GraaljsContextFactory {
     private final HostBridgeRegistry hostBridgeRegistry;
     private final Map<ScriptType, GraaljsContext> activeContexts;
     private final Map<ScriptType, EventBusAPI> eventBuses;
+    private final Map<ScriptType, SchedulerAPI> schedulers;
     private final Map<Class<?>, Object[]> defaultRecordProperties;
     private final Map<Class<?>, Constructor<?>> recordConstructors;
     private final ThreadLocal<GraaljsContext> currentContext;
@@ -75,6 +68,7 @@ public class GraaljsContextFactory {
         this.hostBridgeRegistry = new HostBridgeRegistry();
         this.activeContexts = new EnumMap<>(ScriptType.class);
         this.eventBuses = new EnumMap<>(ScriptType.class);
+        this.schedulers = new EnumMap<>(ScriptType.class);
         this.defaultRecordProperties = new IdentityHashMap<>();
         this.recordConstructors = new IdentityHashMap<>();
         this.currentContext = new ThreadLocal<>();
@@ -161,6 +155,10 @@ public class GraaljsContextFactory {
         return scriptRoot.resolve(type.directory);
     }
 
+    public Path resolveModulesDirectory() {
+        return scriptRoot.resolve("modules");
+    }
+
     public boolean visibleToScripts(String className) {
         return visibleToScripts(className, ClassVisibilityContext.CLASS_LOOKUP);
     }
@@ -188,7 +186,7 @@ public class GraaljsContextFactory {
     }
 
     protected void initTypeWrappers(TypeWrappers wrappers) {
-        registerBuiltinMinecraftTypeWrappers(wrappers);
+        MinecraftTypeWrappers.registerAll(wrappers);
     }
 
     protected GraaljsContext createContext(ScriptType type) {
@@ -204,6 +202,7 @@ public class GraaljsContextFactory {
 
         GraaljsContext context = createContext(type);
         EventBusAPI eventBus = new EventBusAPI(context);
+        SchedulerAPI scheduler = new SchedulerAPI(context);
         BindingsBuilder builder = new BindingsBuilder();
         configureBindings(type, builder);
         builder.add("Java", new JavaAPI(this, context));
@@ -217,11 +216,13 @@ public class GraaljsContextFactory {
         builder.add("dev", createPackageProxy(context, "dev"));
         builder.add("cn", createPackageProxy(context, "cn"));
         builder.add("events", eventBus);
+        builder.add("scheduler", scheduler);
         builder.add("runtime", new RuntimeAPI(this, context));
         context.initialize(builder.build());
 
         activeContexts.put(type, context);
         eventBuses.put(type, eventBus);
+        schedulers.put(type, scheduler);
         Graaljs.LOGGER.info("Created GraalJS context for {}", type.directory);
         return context;
     }
@@ -263,6 +264,18 @@ public class GraaljsContextFactory {
 
     public EventBusAPI getEventBus(ScriptType type) {
         return eventBuses.get(type);
+    }
+
+    public SchedulerAPI getScheduler(ScriptType type) {
+        return schedulers.get(type);
+    }
+
+    public int tickScheduler(ScriptType type, long currentTimeMs) {
+        SchedulerAPI scheduler = schedulers.get(type);
+        if (scheduler == null) {
+            return 0;
+        }
+        return scheduler.tick(currentTimeMs);
     }
 
     public JavaPackageProxy createPackageProxy(GraaljsContext context, String packageName) {
@@ -313,6 +326,10 @@ public class GraaljsContextFactory {
             emitEvent(type, "context.closing", Map.of(
                     "directory", resolveScriptDirectory(type).toString()
             ));
+            SchedulerAPI scheduler = schedulers.remove(type);
+            if (scheduler != null) {
+                scheduler.close();
+            }
             activeContexts.remove(type);
             eventBuses.remove(type);
             context.close();
@@ -333,174 +350,6 @@ public class GraaljsContextFactory {
     void clearCurrentContext(GraaljsContext context) {
         if (currentContext.get() == context) {
             currentContext.remove();
-        }
-    }
-
-    private void registerBuiltinMinecraftTypeWrappers(TypeWrappers wrappers) {
-        if (!wrappers.contains(ResourceLocation.class)) {
-            wrappers.register(ResourceLocation.class, TypeWrapperValidator.NOT_NULL, (context, from, target) -> {
-                if (from instanceof ResourceLocation location) {
-                    return location;
-                }
-                if (from instanceof CharSequence sequence) {
-                    ResourceLocation location = ResourceLocation.tryParse(sequence.toString());
-                    if (location != null) {
-                        return location;
-                    }
-                }
-                throw new IllegalArgumentException("Cannot convert value to ResourceLocation: " + from);
-            });
-        }
-
-        if (!wrappers.contains(BlockPos.class)) {
-            wrappers.register(BlockPos.class, TypeWrapperValidator.NOT_NULL, (context, from, target) -> {
-                if (from instanceof BlockPos blockPos) {
-                    return blockPos;
-                }
-                if (from instanceof java.util.List<?> list && list.size() >= 3) {
-                    return new BlockPos(
-                            ((Number) list.get(0)).intValue(),
-                            ((Number) list.get(1)).intValue(),
-                            ((Number) list.get(2)).intValue()
-                    );
-                }
-                if (from instanceof java.util.Map<?, ?> map) {
-                    return new BlockPos(
-                            ((Number) map.get("x")).intValue(),
-                            ((Number) map.get("y")).intValue(),
-                            ((Number) map.get("z")).intValue()
-                    );
-                }
-                if (from instanceof CharSequence sequence) {
-                    String[] parts = sequence.toString().trim().split("[,\\s]+");
-                    if (parts.length >= 3) {
-                        return new BlockPos(
-                                Integer.parseInt(parts[0]),
-                                Integer.parseInt(parts[1]),
-                                Integer.parseInt(parts[2])
-                        );
-                    }
-                }
-                throw new IllegalArgumentException("Cannot convert value to BlockPos: " + from);
-            });
-        }
-
-        if (!wrappers.contains(Vec3.class)) {
-            wrappers.register(Vec3.class, TypeWrapperValidator.NOT_NULL, (context, from, target) -> {
-                if (from instanceof Vec3 vec3) {
-                    return vec3;
-                }
-                if (from instanceof java.util.List<?> list && list.size() >= 3) {
-                    return new Vec3(
-                            ((Number) list.get(0)).doubleValue(),
-                            ((Number) list.get(1)).doubleValue(),
-                            ((Number) list.get(2)).doubleValue()
-                    );
-                }
-                if (from instanceof java.util.Map<?, ?> map) {
-                    return new Vec3(
-                            ((Number) map.get("x")).doubleValue(),
-                            ((Number) map.get("y")).doubleValue(),
-                            ((Number) map.get("z")).doubleValue()
-                    );
-                }
-                if (from instanceof CharSequence sequence) {
-                    String[] parts = sequence.toString().trim().split("[,\\s]+");
-                    if (parts.length >= 3) {
-                        return new Vec3(
-                                Double.parseDouble(parts[0]),
-                                Double.parseDouble(parts[1]),
-                                Double.parseDouble(parts[2])
-                        );
-                    }
-                }
-                throw new IllegalArgumentException("Cannot convert value to Vec3: " + from);
-            });
-        }
-
-        if (!wrappers.contains(Component.class)) {
-            wrappers.register(Component.class, TypeWrapperValidator.NOT_NULL, (context, from, target) -> {
-                if (from instanceof Component component) {
-                    return component;
-                }
-                if (from instanceof CharSequence sequence) {
-                    return Component.literal(sequence.toString());
-                }
-                if (from instanceof java.util.Map<?, ?> map && map.containsKey("text")) {
-                    return Component.literal(String.valueOf(map.get("text")));
-                }
-                throw new IllegalArgumentException("Cannot convert value to Component: " + from);
-            });
-        }
-
-        if (!wrappers.contains(ItemStack.class)) {
-            wrappers.register(ItemStack.class, TypeWrapperValidator.NOT_NULL, (context, from, target) -> {
-                if (from instanceof ItemStack stack) {
-                    return stack;
-                }
-                if (from instanceof Item item) {
-                    return new ItemStack(item);
-                }
-                if (from instanceof CharSequence sequence) {
-                    Item item = resolveItem(sequence.toString());
-                    if (item != null) {
-                        return new ItemStack(item);
-                    }
-                }
-                if (from instanceof java.util.Map<?, ?> map) {
-                    Object itemValue = map.get("item");
-                    Object countValue = map.get("count");
-                    ItemStack base = context.jsToJava(itemValue, ItemStack.class);
-                    int count = countValue instanceof Number number ? number.intValue() : 1;
-                    ItemStack copy = base.copy();
-                    copy.setCount(count);
-                    return copy;
-                }
-                throw new IllegalArgumentException("Cannot convert value to ItemStack: " + from);
-            });
-        }
-    }
-
-    private Item resolveItem(String rawId) {
-        ensureMinecraftBootstrap();
-        ResourceLocation id = ResourceLocation.tryParse(rawId);
-        if (id == null) {
-            return null;
-        }
-
-        Item vanillaItem = resolveVanillaItem(id);
-        if (vanillaItem != null) {
-            return vanillaItem;
-        }
-
-        try {
-            Item registryItem = BuiltInRegistries.ITEM.get(id);
-            return registryItem != null && registryItem != Items.AIR ? registryItem : null;
-        } catch (Throwable ignored) {
-            return null;
-        }
-    }
-
-    private Item resolveVanillaItem(ResourceLocation id) {
-        if (!"minecraft".equals(id.getNamespace())) {
-            return null;
-        }
-
-        String fieldName = id.getPath().toUpperCase(Locale.ROOT).replace('/', '_');
-        try {
-            Field field = Items.class.getField(fieldName);
-            Object value = field.get(null);
-            return value instanceof Item item ? item : null;
-        } catch (Throwable ignored) {
-            return null;
-        }
-    }
-
-    private void ensureMinecraftBootstrap() {
-        try {
-            Bootstrap.bootStrap();
-        } catch (Throwable ignored) {
-            // 游戏运行期通常已经完成引导；测试环境缺失时尽量补齐即可。
         }
     }
 

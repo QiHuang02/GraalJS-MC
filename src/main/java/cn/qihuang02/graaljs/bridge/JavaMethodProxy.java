@@ -1,6 +1,7 @@
 package cn.qihuang02.graaljs.bridge;
 
 import cn.qihuang02.graaljs.core.GraaljsContext;
+import cn.qihuang02.graaljs.typewrap.GenericTypeInfo;
 import cn.qihuang02.graaljs.util.ClassVisibilityContext;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyExecutable;
@@ -8,6 +9,7 @@ import org.graalvm.polyglot.proxy.ProxyExecutable;
 import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Type;
 import java.util.Arrays;
 import java.util.List;
 
@@ -63,6 +65,7 @@ public class JavaMethodProxy implements ProxyExecutable {
 
     private MethodMatch tryMatch(Method method, Value[] arguments) {
         Class<?>[] parameterTypes = method.getParameterTypes();
+        Type[] genericParameterTypes = method.getGenericParameterTypes();
         boolean varArgs = method.isVarArgs();
 
         if ((!varArgs && parameterTypes.length != arguments.length)
@@ -90,7 +93,7 @@ public class JavaMethodProxy implements ProxyExecutable {
                 return new MethodMatch(method, invocationArguments, score);
             }
 
-            Object converted = convertArgument(arguments[i], parameterTypes[i]);
+            Object converted = convertArgument(arguments[i], genericParameterTypes[i]);
             if (converted == null && parameterTypes[i].isPrimitive()) {
                 return null;
             }
@@ -101,12 +104,13 @@ public class JavaMethodProxy implements ProxyExecutable {
         return new MethodMatch(method, invocationArguments, score);
     }
 
-    private Object convertArgument(Value argument, Class<?> parameterType) {
-        if (parameterType == Value.class) {
+    private Object convertArgument(Value argument, Type parameterType) {
+        GenericTypeInfo info = GenericTypeInfo.of(parameterType);
+        if (info.rawType() == Value.class) {
             return argument;
         }
         try {
-            return context.jsToJava(argument, parameterType);
+            return context.jsToJava(argument, info);
         } catch (RuntimeException exception) {
             return null;
         }

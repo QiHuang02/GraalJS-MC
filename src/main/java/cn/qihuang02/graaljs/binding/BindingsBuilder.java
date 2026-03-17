@@ -1,5 +1,6 @@
 package cn.qihuang02.graaljs.binding;
 
+import java.lang.reflect.Type;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -28,6 +29,14 @@ public class BindingsBuilder {
     }
 
     public BindingsBuilder addTypedFunction(String name, CustomFunction.Func callback, Class<?>... argTypes) {
+        bindings.put(name, new CustomFunction(name, callback, Arrays.copyOf(argTypes, argTypes.length)));
+        return this;
+    }
+
+    /**
+     * 注册带泛型参数类型的函数绑定。
+     */
+    public BindingsBuilder addGenericTypedFunction(String name, CustomFunction.Func callback, Type... argTypes) {
         bindings.put(name, new CustomFunction(name, callback, Arrays.copyOf(argTypes, argTypes.length)));
         return this;
     }

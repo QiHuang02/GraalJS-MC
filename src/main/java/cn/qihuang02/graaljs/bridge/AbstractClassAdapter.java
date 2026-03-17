@@ -210,10 +210,10 @@ public final class AbstractClassAdapter {
             Object[] safeArgs = args == null ? new Object[0] : args;
             Value member = target.hasMember(method.getName()) ? target.getMember(method.getName()) : null;
             if (member != null && member.canExecute()) {
-                return context.jsToJava(member.execute(safeArgs), method.getReturnType());
+                return context.jsToJava(member.execute(safeArgs), method.getGenericReturnType());
             }
             if (target.canInvokeMember(method.getName())) {
-                return context.jsToJava(target.invokeMember(method.getName(), safeArgs), method.getReturnType());
+                return context.jsToJava(target.invokeMember(method.getName(), safeArgs), method.getGenericReturnType());
             }
             throw new IllegalStateException("JS value does not implement abstract method '" + method.getName()
                     + "' for " + signature.superClass().getName() + " with args " + Arrays.toString(safeArgs));

@@ -1,11 +1,13 @@
 package cn.qihuang02.graaljs.bridge;
 
 import cn.qihuang02.graaljs.core.GraaljsContext;
+import cn.qihuang02.graaljs.typewrap.GenericTypeInfo;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyInstantiable;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Type;
 import java.util.List;
 
 /**
@@ -72,6 +74,7 @@ public class JavaClassProxy extends AbstractReflectiveProxyObject implements Pro
 
     private ConstructorMatch tryMatch(Constructor<?> constructor, Value[] arguments) {
         Class<?>[] parameterTypes = constructor.getParameterTypes();
+        Type[] genericParameterTypes = constructor.getGenericParameterTypes();
         boolean varArgs = constructor.isVarArgs();
 
         if ((!varArgs && parameterTypes.length != arguments.length)
@@ -98,7 +101,7 @@ public class JavaClassProxy extends AbstractReflectiveProxyObject implements Pro
                 return new ConstructorMatch(constructor, invocationArguments, score);
             }
 
-            Object converted = convertArgument(arguments[i], parameterTypes[i]);
+            Object converted = convertArgument(arguments[i], genericParameterTypes[i]);
             if (converted == null && parameterTypes[i].isPrimitive()) {
                 return null;
             }
@@ -109,12 +112,13 @@ public class JavaClassProxy extends AbstractReflectiveProxyObject implements Pro
         return new ConstructorMatch(constructor, invocationArguments, score);
     }
 
-    private Object convertArgument(Value argument, Class<?> parameterType) {
-        if (parameterType == Value.class) {
+    private Object convertArgument(Value argument, Type parameterType) {
+        GenericTypeInfo info = GenericTypeInfo.of(parameterType);
+        if (info.rawType() == Value.class) {
             return argument;
         }
         try {
-            return context.jsToJava(argument, parameterType);
+            return context.jsToJava(argument, info);
         } catch (RuntimeException exception) {
             return null;
         }
