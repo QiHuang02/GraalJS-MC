@@ -12,6 +12,8 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 方法代理，支持简单重载与可变参数分派。
@@ -20,11 +22,17 @@ public class JavaMethodProxy implements ProxyExecutable {
     private final GraaljsContext context;
     private final Object target;
     private final List<Method> methods;
+    /**
+     * 重载解析缓存：参数类型签名 → 最佳匹配的 Method。
+     * 仅当方法列表有多个重载时启用缓存。
+     */
+    private final Map<ArgSignature, Method> resolveCache;
 
     public JavaMethodProxy(GraaljsContext context, Object target, List<Method> methods) {
         this.context = context;
         this.target = target;
         this.methods = methods;
+        this.resolveCache = methods.size() > 1 ? new ConcurrentHashMap<>() : null;
     }
 
     @Override
@@ -49,6 +57,28 @@ public class JavaMethodProxy implements ProxyExecutable {
     }
 
     private MethodMatch resolve(Value[] arguments) {
+        // 如果有缓存，先查缓存中的 Method，直接用它做 tryMatch
+        if (resolveCache != null) {
+            ArgSignature sig = ArgSignature.of(arguments);
+            Method cached = resolveCache.get(sig);
+            if (cached != null) {
+                MethodMatch match = tryMatch(cached, arguments);
+                if (match != null) {
+                    return match;
+                }
+                // 缓存失效（极少见），移除后走全量解析
+                resolveCache.remove(sig);
+            }
+            MethodMatch result = resolveAll(arguments);
+            if (result != null) {
+                resolveCache.put(sig, result.method());
+            }
+            return result;
+        }
+        return resolveAll(arguments);
+    }
+
+    private MethodMatch resolveAll(Value[] arguments) {
         MethodMatch bestMatch = null;
         int bestScore = Integer.MAX_VALUE;
         int bestCount = 0;
@@ -136,6 +166,81 @@ public class JavaMethodProxy implements ProxyExecutable {
         @Override
         public String toString() {
             return method + " " + Arrays.toString(arguments);
+        }
+    }
+
+    /**
+     * 参数类型签名，用于重载解析缓存的 key。
+     * 基于每个参数的 JS 类型特征（而非具体值）。
+     */
+    static final class ArgSignature {
+        private static final byte TYPE_NULL = 0;
+        private static final byte TYPE_BOOLEAN = 1;
+        private static final byte TYPE_INT = 2;
+        private static final byte TYPE_LONG = 3;
+        private static final byte TYPE_DOUBLE = 4;
+        private static final byte TYPE_STRING = 5;
+        private static final byte TYPE_HOST = 6;
+        private static final byte TYPE_ARRAY = 7;
+        private static final byte TYPE_OBJECT = 8;
+        private static final byte TYPE_EXECUTABLE = 9;
+
+        private final byte[] types;
+        private final Class<?>[] hostClasses; // 仅 host object 参数记录具体类
+        private final int hashCode;
+
+        private ArgSignature(byte[] types, Class<?>[] hostClasses) {
+            this.types = types;
+            this.hostClasses = hostClasses;
+            this.hashCode = Arrays.hashCode(types) * 31 + Arrays.hashCode(hostClasses);
+        }
+
+        static ArgSignature of(Value[] arguments) {
+            byte[] types = new byte[arguments.length];
+            Class<?>[] hostClasses = null;
+            for (int i = 0; i < arguments.length; i++) {
+                Value arg = arguments[i];
+                if (arg.isNull()) {
+                    types[i] = TYPE_NULL;
+                } else if (arg.isHostObject()) {
+                    types[i] = TYPE_HOST;
+                    if (hostClasses == null) {
+                        hostClasses = new Class<?>[arguments.length];
+                    }
+                    hostClasses[i] = arg.asHostObject().getClass();
+                } else if (arg.isBoolean()) {
+                    types[i] = TYPE_BOOLEAN;
+                } else if (arg.isNumber()) {
+                    if (arg.fitsInInt()) {
+                        types[i] = TYPE_INT;
+                    } else if (arg.fitsInLong()) {
+                        types[i] = TYPE_LONG;
+                    } else {
+                        types[i] = TYPE_DOUBLE;
+                    }
+                } else if (arg.isString()) {
+                    types[i] = TYPE_STRING;
+                } else if (arg.hasArrayElements()) {
+                    types[i] = TYPE_ARRAY;
+                } else if (arg.canExecute()) {
+                    types[i] = TYPE_EXECUTABLE;
+                } else {
+                    types[i] = TYPE_OBJECT;
+                }
+            }
+            return new ArgSignature(types, hostClasses);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof ArgSignature that)) return false;
+            return Arrays.equals(types, that.types) && Arrays.equals(hostClasses, that.hostClasses);
+        }
+
+        @Override
+        public int hashCode() {
+            return hashCode;
         }
     }
 }

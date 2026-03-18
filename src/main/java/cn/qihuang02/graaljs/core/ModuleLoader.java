@@ -10,7 +10,9 @@ import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * CommonJS 风格的模块加载器。
@@ -28,6 +30,7 @@ public class ModuleLoader {
     private final Path scriptRoot;
     private final Path modulesRoot;
     private final Map<Path, Value> cache;
+    private final Set<Path> loading;
     private final ThreadLocal<Deque<Path>> scriptPathStack;
 
     public ModuleLoader(GraaljsContext context, Path scriptRoot) {
@@ -35,6 +38,7 @@ public class ModuleLoader {
         this.scriptRoot = scriptRoot.normalize();
         this.modulesRoot = this.scriptRoot.resolve("modules").normalize();
         this.cache = new HashMap<>();
+        this.loading = new HashSet<>();
         this.scriptPathStack = ThreadLocal.withInitial(ArrayDeque::new);
     }
 
@@ -51,6 +55,11 @@ public class ModuleLoader {
 
         Value cachedModule = cache.get(resolved);
         if (cachedModule != null) {
+            // 循环依赖检测：模块在缓存中但仍在加载中，返回部分初始化的 exports
+            if (loading.contains(resolved)) {
+                Graaljs.LOGGER.warn("Circular dependency detected: {} requires {} (returning partially initialized exports)",
+                        currentScriptPath(), resolved);
+            }
             return cachedModule.getMember("exports");
         }
 
@@ -85,13 +94,20 @@ public class ModuleLoader {
             if (Files.isRegularFile(withJs)) {
                 resolved = withJs;
             } else if (Files.isDirectory(resolved)) {
-                // 尝试 index.js
-                Path indexJs = resolved.resolve("index.js");
-                if (Files.isRegularFile(indexJs)) {
-                    resolved = indexJs;
+                // 先检查 package.json 的 "main" 字段
+                Path packageJson = resolved.resolve("package.json");
+                Path mainEntry = resolvePackageMain(packageJson, resolved);
+                if (mainEntry != null && Files.isRegularFile(mainEntry)) {
+                    resolved = mainEntry;
                 } else {
-                    // 回退到加 .js 后缀（会在 loadModule 中报错）
-                    resolved = withJs;
+                    // 回退到 index.js
+                    Path indexJs = resolved.resolve("index.js");
+                    if (Files.isRegularFile(indexJs)) {
+                        resolved = indexJs;
+                    } else {
+                        // 回退到加 .js 后缀（会在 loadModule 中报错）
+                        resolved = withJs;
+                    }
                 }
             } else {
                 resolved = withJs;
@@ -127,12 +143,14 @@ public class ModuleLoader {
 
         // 在执行前先缓存 module 对象，以支持循环依赖
         cache.put(modulePath, moduleObj);
+        loading.add(modulePath);
 
         // JSON 模块：直接解析并赋值给 module.exports
         if (modulePath.toString().endsWith(".json")) {
             Value parsed = context.getPolyglotContext().eval("js",
                     "JSON.parse(" + jsonStringLiteral(code) + ")");
             moduleObj.putMember("exports", parsed);
+            loading.remove(modulePath);
             return moduleObj.getMember("exports");
         }
 
@@ -168,6 +186,7 @@ public class ModuleLoader {
             );
         } finally {
             popScriptPath();
+            loading.remove(modulePath);
         }
 
         // 返回 module.exports（支持整体替换）
@@ -224,10 +243,79 @@ public class ModuleLoader {
     }
 
     /**
+     * 获取当前正在执行的脚本路径（完整路径）。
+     *
+     * @return 当前脚本路径，若栈为空则返回 null
+     */
+    public Path currentScriptPath() {
+        Deque<Path> stack = scriptPathStack.get();
+        return stack.isEmpty() ? null : stack.peek();
+    }
+
+    /**
      * 清空模块缓存。
      */
     public void close() {
         cache.clear();
+        loading.clear();
+    }
+
+    /**
+     * 从 package.json 中解析 "main" 字段指定的入口文件。
+     *
+     * @param packageJsonPath package.json 的路径
+     * @param packageDir      包目录
+     * @return 解析后的入口文件路径，若不存在或无 main 字段则返回 null
+     */
+    private Path resolvePackageMain(Path packageJsonPath, Path packageDir) {
+        if (!Files.isRegularFile(packageJsonPath)) {
+            return null;
+        }
+        try {
+            String content = Files.readString(packageJsonPath);
+            // 简单解析 "main" 字段，避免引入 JSON 库依赖
+            String mainValue = extractJsonStringField(content, "main");
+            if (mainValue == null || mainValue.isBlank()) {
+                return null;
+            }
+            Path mainPath = packageDir.resolve(mainValue).normalize();
+            // 如果 main 指向的路径没有扩展名，尝试加 .js
+            if (!mainPath.getFileName().toString().contains(".")) {
+                Path withJs = mainPath.resolveSibling(mainPath.getFileName().toString() + ".js");
+                if (Files.isRegularFile(withJs)) {
+                    return withJs;
+                }
+            }
+            return mainPath;
+        } catch (IOException e) {
+            Graaljs.LOGGER.warn("Failed to read package.json: {}", packageJsonPath, e);
+            return null;
+        }
+    }
+
+    /**
+     * 从 JSON 字符串中提取指定字段的字符串值（简单实现，不依赖 JSON 库）。
+     */
+    static String extractJsonStringField(String json, String fieldName) {
+        // 匹配 "fieldName" : "value" 或 "fieldName": "value"
+        String pattern = "\"" + fieldName + "\"";
+        int idx = json.indexOf(pattern);
+        if (idx < 0) {
+            return null;
+        }
+        int colonIdx = json.indexOf(':', idx + pattern.length());
+        if (colonIdx < 0) {
+            return null;
+        }
+        int quoteStart = json.indexOf('"', colonIdx + 1);
+        if (quoteStart < 0) {
+            return null;
+        }
+        int quoteEnd = json.indexOf('"', quoteStart + 1);
+        if (quoteEnd < 0) {
+            return null;
+        }
+        return json.substring(quoteStart + 1, quoteEnd);
     }
 
     // 仅用于测试

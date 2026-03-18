@@ -134,22 +134,59 @@ public class ForgeEventBridge {
 
     @SuppressWarnings("unchecked")
     private <T extends Event> ForgeListener createListener(String eventName, ForgeEventMapping<T> mapping, Value callback) {
+        String sourceName = resolveSourceName();
         Consumer<T> consumer = event -> {
             try {
                 Object jsEvent = context.javaToJs(event);
-                callback.execute(jsEvent);
+                Value result = callback.execute(jsEvent);
+                // 事件取消：JS 回调返回 false 或 { cancelled: true }
+                if (event.isCancelable()) {
+                    if (result != null) {
+                        if (result.isBoolean() && !result.asBoolean()) {
+                            event.setCanceled(true);
+                        } else if (result.hasMembers() && result.hasMember("cancelled")) {
+                            Value cancelledVal = result.getMember("cancelled");
+                            if (cancelledVal != null && cancelledVal.isBoolean() && cancelledVal.asBoolean()) {
+                                event.setCanceled(true);
+                            }
+                        }
+                    }
+                }
+                // 事件结果回写：JS 回调返回 "allow" / "deny" / "default"
+                if (event.hasResult() && result != null && result.isString()) {
+                    String resultStr = result.asString();
+                    switch (resultStr) {
+                        case "allow" -> event.setResult(Event.Result.ALLOW);
+                        case "deny" -> event.setResult(Event.Result.DENY);
+                        case "default" -> event.setResult(Event.Result.DEFAULT);
+                    }
+                }
             } catch (Exception e) {
-                Graaljs.LOGGER.error("Forge event listener error for '{}': {}", eventName, e.getMessage(), e);
+                String source = sourceName != null ? sourceName : "unknown";
+                Graaljs.LOGGER.error("Forge event listener error for '{}' (registered in {}): {}", eventName, source, e.getMessage(), e);
             }
         };
 
         eventBus.addListener(mapping.priority(), false, mapping.eventClass(), consumer);
-        return new ForgeListener(callback, (Consumer<? extends Event>) consumer);
+        return new ForgeListener(callback, (Consumer<? extends Event>) consumer, sourceName);
+    }
+
+    /**
+     * 从 ModuleLoader 的脚本路径栈获取当前注册来源。
+     */
+    private String resolveSourceName() {
+        if (context.getModuleLoader() != null) {
+            java.nio.file.Path path = context.getModuleLoader().currentScriptPath();
+            if (path != null) {
+                return path.toString();
+            }
+        }
+        return null;
     }
 
     private record ForgeEventMapping<T extends Event>(Class<T> eventClass, EventPriority priority) {
     }
 
-    private record ForgeListener(Value callback, Consumer<? extends Event> forgeConsumer) {
+    private record ForgeListener(Value callback, Consumer<? extends Event> forgeConsumer, String sourceName) {
     }
 }

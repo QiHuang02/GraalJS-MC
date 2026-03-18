@@ -21,6 +21,15 @@ import cn.qihuang02.graaljs.typewrap.TypeWrapperValidator;
 import cn.qihuang02.graaljs.typewrap.TypeWrappers;
 import cn.qihuang02.graaljs.util.ClassVisibilityContext;
 import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.CommandEvent;
+import net.minecraftforge.event.ServerChatEvent;
+import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.entity.living.LivingDeathEvent;
+import net.minecraftforge.event.entity.living.LivingHurtEvent;
+import net.minecraftforge.event.entity.player.PlayerEvent;
+import net.minecraftforge.event.entity.player.PlayerInteractEvent;
+import net.minecraftforge.event.level.BlockEvent;
+import net.minecraftforge.event.level.LevelEvent;
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.fml.loading.FMLPaths;
 
@@ -211,9 +220,35 @@ public class GraaljsContextFactory {
 
     /**
      * 注册 Forge 事件名到 Event 类的映射。子类可覆盖以添加自定义事件映射。
+     * 默认注册常用的 Minecraft 事件。
      */
     protected void configureForgeEvents(ScriptType type, ForgeEventBridge bridge) {
-        // 默认不注册任何映射，子类按需覆盖
+        // 玩家事件
+        bridge.registerMapping("player.join", PlayerEvent.PlayerLoggedInEvent.class);
+        bridge.registerMapping("player.leave", PlayerEvent.PlayerLoggedOutEvent.class);
+        bridge.registerMapping("player.respawn", PlayerEvent.PlayerRespawnEvent.class);
+        bridge.registerMapping("player.interact.block", PlayerInteractEvent.RightClickBlock.class);
+        bridge.registerMapping("player.interact.entity", PlayerInteractEvent.EntityInteract.class);
+        bridge.registerMapping("player.chat", ServerChatEvent.class);
+
+        // 实体事件
+        bridge.registerMapping("entity.death", LivingDeathEvent.class);
+        bridge.registerMapping("entity.hurt", LivingHurtEvent.class);
+
+        // 世界事件（1.20+ 使用 LevelEvent）
+        bridge.registerMapping("world.load", LevelEvent.Load.class);
+        bridge.registerMapping("world.unload", LevelEvent.Unload.class);
+
+        // 方块事件
+        bridge.registerMapping("block.break", BlockEvent.BreakEvent.class);
+        bridge.registerMapping("block.place", BlockEvent.EntityPlaceEvent.class);
+
+        // 命令事件
+        bridge.registerMapping("command.execute", CommandEvent.class);
+
+        // Tick 事件
+        bridge.registerMapping("server.tick", TickEvent.ServerTickEvent.class);
+        bridge.registerMapping("client.tick", TickEvent.ClientTickEvent.class);
     }
 
     /**

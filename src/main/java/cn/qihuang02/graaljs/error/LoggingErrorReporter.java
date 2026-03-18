@@ -48,6 +48,13 @@ public class LoggingErrorReporter implements ErrorReporter {
         if (lineSource != null && !lineSource.isBlank()) {
             builder.append(" -> ").append(lineSource.strip());
         }
+        // 附加上下文信息：当前脚本路径栈
+        if (context.getModuleLoader() != null) {
+            java.nio.file.Path currentScript = context.getModuleLoader().currentScriptPath();
+            if (currentScript != null && (sourceName == null || !currentScript.toString().equals(sourceName))) {
+                builder.append(" [currentScript=").append(currentScript).append(']');
+            }
+        }
         return builder.toString();
     }
 }

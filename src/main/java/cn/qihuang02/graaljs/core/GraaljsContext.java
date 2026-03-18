@@ -68,8 +68,8 @@ public class GraaljsContext {
         context = Context.newBuilder("js")
                 .allowHostAccess(org.graalvm.polyglot.HostAccess.newBuilder()
                         .allowPublicAccess(false)
-                        .allowAllImplementations(true)
-                        .allowAllClassImplementations(true)
+                        .allowAllImplementations(false)
+                        .allowAllClassImplementations(false)
                         .allowArrayAccess(true)
                         .allowListAccess(true)
                         .allowMapAccess(true)
@@ -220,6 +220,15 @@ public class GraaljsContext {
         }
         if (target == Boolean.class || target == boolean.class) {
             return castValue(target, normalized instanceof Boolean bool ? bool : Boolean.parseBoolean(String.valueOf(normalized)));
+        }
+        if (target == Character.class || target == char.class) {
+            if (normalized instanceof String str && !str.isEmpty()) {
+                return castValue(target, str.charAt(0));
+            }
+            if (normalized instanceof Number num) {
+                return castValue(target, (char) num.intValue());
+            }
+            throw new IllegalArgumentException("Cannot convert " + normalized.getClass().getName() + " to char");
         }
         if (Number.class.isAssignableFrom(box(target)) || target.isPrimitive()) {
             return convertNumber(target, normalized);

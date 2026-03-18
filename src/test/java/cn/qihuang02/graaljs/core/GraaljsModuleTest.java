@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -255,6 +256,80 @@ class GraaljsModuleTest {
         assertEquals("test-mod", bindings.getMember("resultName").asString());
         assertEquals("1.0.0", bindings.getMember("resultVersion").asString());
         context.close();
+    }
+
+    @Test
+    void shouldResolvePackageJsonMainField() throws IOException {
+        writeScript("startup_scripts/main.js", """
+                var lib = require('./mylib');
+                result = lib.value;
+                """);
+        writeScript("startup_scripts/mylib/package.json", """
+                {"name": "mylib", "main": "entry.js"}
+                """);
+        writeScript("startup_scripts/mylib/entry.js", """
+                exports.value = 'from-package-main';
+                """);
+
+        GraaljsContext context = createAndLoad();
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("from-package-main", bindings.getMember("result").asString());
+        context.close();
+    }
+
+    @Test
+    void shouldFallbackToIndexJsWhenPackageJsonHasNoMain() throws IOException {
+        writeScript("startup_scripts/main.js", """
+                var lib = require('./mylib');
+                result = lib.value;
+                """);
+        writeScript("startup_scripts/mylib/package.json", """
+                {"name": "mylib", "version": "1.0.0"}
+                """);
+        writeScript("startup_scripts/mylib/index.js", """
+                exports.value = 'from-index-fallback';
+                """);
+
+        GraaljsContext context = createAndLoad();
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("from-index-fallback", bindings.getMember("result").asString());
+        context.close();
+    }
+
+    @Test
+    void shouldHandleCircularDependencyWithPartialExports() throws IOException {
+        // A requires B, B requires A — B should see A's partial exports
+        writeScript("startup_scripts/main.js", """
+                var b = require('./b');
+                resultBFromA = b.fromA;
+                """);
+        writeScript("startup_scripts/a.js", """
+                exports.earlyExport = 'early';
+                var b = require('./b');
+                exports.lateExport = 'late';
+                """);
+        writeScript("startup_scripts/b.js", """
+                var a = require('./a');
+                exports.fromA = a.earlyExport;
+                """);
+
+        GraaljsContext context = createAndLoad();
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        // B should see A's earlyExport (set before B was required)
+        assertEquals("early", bindings.getMember("resultBFromA").asString());
+        context.close();
+    }
+
+    @Test
+    void shouldExtractJsonStringField() {
+        assertEquals("lib/main.js", ModuleLoader.extractJsonStringField(
+                "{\"name\": \"mylib\", \"main\": \"lib/main.js\", \"version\": \"1.0\"}", "main"));
+        assertEquals("mylib", ModuleLoader.extractJsonStringField(
+                "{\"name\": \"mylib\"}", "name"));
+        assertNull(ModuleLoader.extractJsonStringField(
+                "{\"name\": \"mylib\"}", "main"));
+        assertNull(ModuleLoader.extractJsonStringField(
+                "{}", "main"));
     }
 
     private GraaljsContext createAndLoad() {

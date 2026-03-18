@@ -17,7 +17,7 @@ public class DynamicFunction implements CustomJavaToJsWrapper {
 
     @Override
     public Object convertJavaToJs(GraaljsContext context) {
-        return (ProxyExecutable) arguments -> callback.call(arguments);
+        return (ProxyExecutable) callback::call;
     }
 
     @FunctionalInterface

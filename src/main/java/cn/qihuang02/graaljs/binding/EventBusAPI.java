@@ -146,7 +146,8 @@ public class EventBusAPI {
         if (callback == null || !callback.canExecute()) {
             throw new IllegalArgumentException("Event callback must be executable");
         }
-        listeners.computeIfAbsent(eventName, ignored -> new ArrayList<>()).add(new Listener(callback, once));
+        String sourceName = resolveSourceName();
+        listeners.computeIfAbsent(eventName, ignored -> new ArrayList<>()).add(new Listener(callback, once, sourceName));
         return listeners.get(eventName).size();
     }
 
@@ -172,7 +173,8 @@ public class EventBusAPI {
             try {
                 listener.callback().execute(jsPayload);
             } catch (Exception e) {
-                Graaljs.LOGGER.error("Event listener error for '{}': {}", eventName, e.getMessage(), e);
+                String source = listener.sourceName() != null ? listener.sourceName() : "unknown";
+                Graaljs.LOGGER.error("Event listener error for '{}' (registered in {}): {}", eventName, source, e.getMessage(), e);
             }
             delivered++;
             if (listener.once()) {
@@ -196,12 +198,25 @@ public class EventBusAPI {
         return envelope;
     }
 
-    private record Listener(Value callback, boolean once) {
+    private record Listener(Value callback, boolean once, String sourceName) {
     }
 
     private void requireForgeBridge() {
         if (forgeBridge == null) {
             throw new IllegalStateException("Forge event bridge is not configured for this context");
         }
+    }
+
+    /**
+     * 从 ModuleLoader 的脚本路径栈获取当前注册来源。
+     */
+    private String resolveSourceName() {
+        if (context.getModuleLoader() != null) {
+            java.nio.file.Path path = context.getModuleLoader().currentScriptPath();
+            if (path != null) {
+                return path.toString();
+            }
+        }
+        return null;
     }
 }

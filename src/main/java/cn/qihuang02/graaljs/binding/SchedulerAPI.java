@@ -34,7 +34,7 @@ public class SchedulerAPI {
             delayMs = 0;
         }
         int id = nextId.getAndIncrement();
-        tasks.put(id, new ScheduledTask(id, callback, delayMs, 0, currentTimeMs + delayMs, false));
+        tasks.put(id, new ScheduledTask(id, callback, delayMs, 0, currentTimeMs + delayMs, false, resolveSourceName()));
         return id;
     }
 
@@ -49,7 +49,7 @@ public class SchedulerAPI {
             throw new IllegalArgumentException("Interval must be positive");
         }
         int id = nextId.getAndIncrement();
-        tasks.put(id, new ScheduledTask(id, callback, intervalMs, intervalMs, currentTimeMs + intervalMs, false));
+        tasks.put(id, new ScheduledTask(id, callback, intervalMs, intervalMs, currentTimeMs + intervalMs, false, resolveSourceName()));
         return id;
     }
 
@@ -92,10 +92,11 @@ public class SchedulerAPI {
                 try {
                     task.callback.execute();
                 } catch (Exception e) {
+                    String source = task.sourceName != null ? task.sourceName : "scheduler";
                     context.getFactory().getErrorReporter().error(
                             context,
                             "Scheduler callback error (id=" + task.id + "): " + e.getMessage(),
-                            "scheduler", -1, "", -1, e
+                            source, -1, "", -1, e
                     );
                 }
                 fired++;
@@ -138,21 +139,36 @@ public class SchedulerAPI {
         }
     }
 
+    /**
+     * 从 ModuleLoader 的脚本路径栈获取当前注册来源。
+     */
+    private String resolveSourceName() {
+        if (context.getModuleLoader() != null) {
+            java.nio.file.Path path = context.getModuleLoader().currentScriptPath();
+            if (path != null) {
+                return path.toString();
+            }
+        }
+        return null;
+    }
+
     private static final class ScheduledTask {
         final int id;
         final Value callback;
         final long delayMs;
         final long intervalMs;
+        final String sourceName;
         long nextFireTimeMs;
         volatile boolean cancelled;
 
-        ScheduledTask(int id, Value callback, long delayMs, long intervalMs, long nextFireTimeMs, boolean cancelled) {
+        ScheduledTask(int id, Value callback, long delayMs, long intervalMs, long nextFireTimeMs, boolean cancelled, String sourceName) {
             this.id = id;
             this.callback = callback;
             this.delayMs = delayMs;
             this.intervalMs = intervalMs;
             this.nextFireTimeMs = nextFireTimeMs;
             this.cancelled = cancelled;
+            this.sourceName = sourceName;
         }
     }
 }

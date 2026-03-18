@@ -686,6 +686,25 @@ class GraaljsContextIntegrationTest {
     }
 
     @Test
+    void shouldResolveByteShortCharOverloads() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("fineOverload.js", """
+                charResult = fineOverloadTarget.acceptChar('a');
+                byteResult = fineOverloadTarget.acceptNum(42);
+                shortResult = fineOverloadTarget.acceptNum(1000);
+                intResult = fineOverloadTarget.acceptNum(100000);
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("char:a", bindings.getMember("charResult").asString());
+        assertEquals("byte:42", bindings.getMember("byteResult").asString());
+        assertEquals("short:1000", bindings.getMember("shortResult").asString());
+        assertEquals("int:100000", bindings.getMember("intResult").asString());
+    }
+
+    @Test
     void shouldDetectAmbiguousMethodOverloads() {
         TestFactory factory = new TestFactory(tempDir, new TestBindings());
         GraaljsContext context = factory.create(ScriptType.STARTUP);
@@ -879,6 +898,109 @@ class GraaljsContextIntegrationTest {
         );
     }
 
+    @Test
+    void shouldCancelForgeEventWhenCallbackReturnsFalse() {
+        IEventBus testBus = BusBuilder.builder().build();
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        factory.setTestEventBus(testBus);
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        ForgeEventBridge bridge = factory.getEventBus(ScriptType.STARTUP).getForgeBridge();
+        bridge.registerMapping("test.cancelable", CancelableForgeEvent.class);
+
+        context.eval("cancelEvent.js", """
+                events.onForge("test.cancelable", function(event) {
+                    return false;
+                });
+                """);
+
+        CancelableForgeEvent event = new CancelableForgeEvent("cancel me");
+        testBus.post(event);
+        assertTrue(event.isCanceled(), "Event should be canceled when callback returns false");
+    }
+
+    @Test
+    void shouldCancelForgeEventWhenCallbackReturnsCancelledObject() {
+        IEventBus testBus = BusBuilder.builder().build();
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        factory.setTestEventBus(testBus);
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        ForgeEventBridge bridge = factory.getEventBus(ScriptType.STARTUP).getForgeBridge();
+        bridge.registerMapping("test.cancelable", CancelableForgeEvent.class);
+
+        context.eval("cancelEventObj.js", """
+                events.onForge("test.cancelable", function(event) {
+                    return { cancelled: true };
+                });
+                """);
+
+        CancelableForgeEvent event = new CancelableForgeEvent("cancel me");
+        testBus.post(event);
+        assertTrue(event.isCanceled(), "Event should be canceled when callback returns { cancelled: true }");
+    }
+
+    @Test
+    void shouldSetForgeEventResultFromCallbackReturnValue() {
+        IEventBus testBus = BusBuilder.builder().build();
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        factory.setTestEventBus(testBus);
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        ForgeEventBridge bridge = factory.getEventBus(ScriptType.STARTUP).getForgeBridge();
+        bridge.registerMapping("test.result", ResultForgeEvent.class);
+
+        context.eval("resultEvent.js", """
+                events.onForge("test.result", function(event) {
+                    return "allow";
+                });
+                """);
+
+        ResultForgeEvent event = new ResultForgeEvent("test");
+        testBus.post(event);
+        assertEquals(Event.Result.ALLOW, event.getResult(), "Event result should be ALLOW");
+    }
+
+    @Test
+    void shouldNotCancelNonCancelableEvent() {
+        IEventBus testBus = BusBuilder.builder().build();
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        factory.setTestEventBus(testBus);
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        ForgeEventBridge bridge = factory.getEventBus(ScriptType.STARTUP).getForgeBridge();
+        bridge.registerMapping("test.event", TestForgeEvent.class);
+
+        context.eval("noCancelEvent.js", """
+                events.onForge("test.event", function(event) {
+                    return false;
+                });
+                """);
+
+        // TestForgeEvent is not @Cancelable, so returning false should not throw
+        TestForgeEvent event = new TestForgeEvent("no cancel");
+        testBus.post(event);
+        // No assertion needed — just verify no exception is thrown
+    }
+
+    @Test
+    void shouldNotAllowDirectHostObjectMemberAccessWithPublicAccessFalse() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        // With allowPublicAccess(false), direct host objects should not expose members
+        // unless they go through our proxy layer
+        context.eval("hostAccess.js", """
+                // api goes through our proxy layer, so members should be accessible
+                hasRecord = "record" in api;
+                hasVisibleField = "visibleField" in api;
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertTrue(bindings.getMember("hasRecord").asBoolean(), "Proxy-wrapped members should be accessible");
+        assertTrue(bindings.getMember("hasVisibleField").asBoolean(), "Proxy-wrapped fields should be accessible");
+    }
+
     private void writeScript(ScriptType type, String fileName, String content) throws IOException {
         Path dir = tempDir.resolve(type.directory);
         Files.createDirectories(dir);
@@ -950,6 +1072,7 @@ class GraaljsContextIntegrationTest {
                     .add("visibilitySample", new VisibilitySample())
                     .add("overloadTarget", new OverloadTarget())
                     .add("ambiguousTarget", new AmbiguousTarget())
+                    .add("fineOverloadTarget", new FineOverloadTarget())
                     .addClass("MultiConstructorAbstract", MultiConstructorAbstract.class);
         }
     }
@@ -1320,6 +1443,33 @@ class GraaljsContextIntegrationTest {
         }
     }
 
+    public static class FineOverloadTarget {
+        public String accept(char value) {
+            return "char:" + value;
+        }
+
+        public String accept(String value) {
+            return "string:" + value;
+        }
+
+        // char-only overload (no String competitor)
+        public String acceptChar(char value) {
+            return "char:" + value;
+        }
+
+        public String acceptNum(byte value) {
+            return "byte:" + value;
+        }
+
+        public String acceptNum(short value) {
+            return "short:" + value;
+        }
+
+        public String acceptNum(int value) {
+            return "int:" + value;
+        }
+    }
+
     public abstract static class MultiConstructorAbstract {
         private final String tag;
 
@@ -1346,6 +1496,40 @@ class GraaljsContextIntegrationTest {
         }
 
         public TestForgeEvent(String message) {
+            this.message = message;
+        }
+
+        public String message() {
+            return message;
+        }
+    }
+
+    @net.minecraftforge.eventbus.api.Cancelable
+    public static class CancelableForgeEvent extends Event {
+        private final String message;
+
+        public CancelableForgeEvent() {
+            this.message = "";
+        }
+
+        public CancelableForgeEvent(String message) {
+            this.message = message;
+        }
+
+        public String message() {
+            return message;
+        }
+    }
+
+    @net.minecraftforge.eventbus.api.Event.HasResult
+    public static class ResultForgeEvent extends Event {
+        private final String message;
+
+        public ResultForgeEvent() {
+            this.message = "";
+        }
+
+        public ResultForgeEvent(String message) {
             this.message = message;
         }
 

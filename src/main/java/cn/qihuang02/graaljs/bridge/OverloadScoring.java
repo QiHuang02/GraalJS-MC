@@ -54,6 +54,19 @@ public final class OverloadScoring {
         Class<?> boxedParam = box(parameterType);
         Class<?> convertedClass = converted.getClass();
 
+        // char 特殊处理：JS 长度为 1 的字符串对 char 参数给予较低评分
+        if (boxedParam == Character.class) {
+            if (argument.isString()) {
+                String str = argument.asString();
+                return str.length() == 1 ? 1 : 9; // 单字符次优匹配，多字符高惩罚
+            }
+            // 数值转 char 也可以，但评分较高
+            if (argument.isNumber()) {
+                return 6;
+            }
+            return 9;
+        }
+
         // 数值类型需要特殊处理：convertNumber 总是返回目标类型的精确值，
         // 所以不能用 convertedClass == boxedParam 来判断"精确匹配"。
         // 需要基于 JS Value 的自然精度来评分。
@@ -66,11 +79,20 @@ public final class OverloadScoring {
             Integer paramWidth = NUMERIC_WIDTH.get(boxedParam);
             if (naturalWidth != null && paramWidth != null) {
                 if (paramWidth > naturalWidth) {
-                    return 3; // 无损提升（窄→宽）
+                    // 无损提升（窄→宽）：宽度差越小越优先
+                    // 评分范围 1~5，始终低于非数值子类匹配(7)
+                    return paramWidth - naturalWidth;
                 }
-                return 4; // 有损收窄（宽→窄）
+                // 有损收窄（宽→窄）：始终高惩罚
+                return 10 + (naturalWidth - paramWidth);
             }
-            return 4;
+            return 8;
+        }
+
+        // 数值参数匹配 Object/Number 等泛型参数时，给予较高评分
+        // 确保具体数值类型（int/long/double）优先于 Object
+        if (argument.isNumber() && parameterType.isInstance(converted)) {
+            return 7;
         }
 
         // 精确类型匹配（非数值）
@@ -135,12 +157,15 @@ public final class OverloadScoring {
             Integer sourceWidth = NUMERIC_WIDTH.get(sourceBoxed);
             Integer paramWidth = NUMERIC_WIDTH.get(boxedParam);
             if (sourceWidth != null && paramWidth != null) {
-                if (paramWidth >= sourceWidth) {
-                    return 3; // 无损提升
+                if (paramWidth.equals(sourceWidth)) {
+                    return 0;
                 }
-                return 4; // 有损收窄
+                if (paramWidth > sourceWidth) {
+                    return paramWidth - sourceWidth;
+                }
+                return 10 + (sourceWidth - paramWidth);
             }
-            return 4;
+            return 8;
         }
 
         // String/Boolean 转换
@@ -153,13 +178,29 @@ public final class OverloadScoring {
 
     /**
      * 根据 JS Value 的精度确定其"自然"Java 数值类型。
+     * <p>
+     * GraalJS Value 没有 fitsInByte/fitsInShort/fitsInFloat，
+     * 通过 fitsInInt + 范围检查实现细粒度判断。
      */
-    private static Class<?> naturalNumericType(Value value) {
+    static Class<?> naturalNumericType(Value value) {
         if (value.fitsInInt()) {
+            int intVal = value.asInt();
+            if (intVal >= Byte.MIN_VALUE && intVal <= Byte.MAX_VALUE) {
+                return Byte.class;
+            }
+            if (intVal >= Short.MIN_VALUE && intVal <= Short.MAX_VALUE) {
+                return Short.class;
+            }
             return Integer.class;
         }
         if (value.fitsInLong()) {
             return Long.class;
+        }
+        // 检查是否可以无损表示为 float
+        double doubleVal = value.asDouble();
+        if (doubleVal >= -Float.MAX_VALUE && doubleVal <= Float.MAX_VALUE
+                && Double.compare(doubleVal, (double) (float) doubleVal) == 0) {
+            return Float.class;
         }
         return Double.class;
     }
