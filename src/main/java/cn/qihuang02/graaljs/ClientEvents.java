@@ -30,6 +30,12 @@ public class ClientEvents {
             return;
         }
 
+        // 如果上下文已被外部关闭（如 reload），重置状态以便重新初始化
+        if (initialized && factory.getContext(ScriptType.CLIENT) == null) {
+            initialized = false;
+            clientTickCount = 0;
+        }
+
         // 首次客户端 tick 时创建并加载 CLIENT 上下文
         if (!initialized) {
             initialized = true;

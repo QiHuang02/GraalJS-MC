@@ -1,6 +1,7 @@
 package cn.qihuang02.graaljs.core;
 
 import cn.qihuang02.graaljs.binding.BindingsBuilder;
+import cn.qihuang02.graaljs.binding.ForgeEventBridge;
 import cn.qihuang02.graaljs.bridge.CustomMember;
 import cn.qihuang02.graaljs.bridge.CustomMemberProvider;
 import cn.qihuang02.graaljs.error.ErrorReporter;
@@ -13,6 +14,9 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.eventbus.api.BusBuilder;
+import net.minecraftforge.eventbus.api.Event;
+import net.minecraftforge.eventbus.api.IEventBus;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 import org.junit.jupiter.api.Test;
@@ -137,6 +141,17 @@ class GraaljsContextIntegrationTest {
         assertFalse(factory.visibleToScripts("java.lang.Runtime", ClassVisibilityContext.BINDING));
         assertFalse(factory.visibleToScripts("java.nio.file.Files", ClassVisibilityContext.MEMBER));
         assertTrue(factory.visibleToScripts("java.util.ArrayList", ClassVisibilityContext.RETURN_TYPE));
+
+        // 新增黑名单类验证
+        assertFalse(factory.visibleToScripts("java.lang.ClassLoader", ClassVisibilityContext.CLASS_LOOKUP));
+        assertFalse(factory.visibleToScripts("java.lang.Thread", ClassVisibilityContext.CLASS_LOOKUP));
+        assertFalse(factory.visibleToScripts("java.lang.invoke.MethodHandle", ClassVisibilityContext.CLASS_LOOKUP));
+        assertFalse(factory.visibleToScripts("java.lang.Class", ClassVisibilityContext.CLASS_LOOKUP));
+        assertFalse(factory.visibleToScripts("sun.misc.Unsafe", ClassVisibilityContext.CLASS_LOOKUP));
+        assertFalse(factory.visibleToScripts("jdk.internal.misc.Unsafe", ClassVisibilityContext.CLASS_LOOKUP));
+        assertFalse(factory.visibleToScripts("com.sun.management.HotSpotDiagnosticMXBean", ClassVisibilityContext.CLASS_LOOKUP));
+        assertFalse(factory.visibleToScripts("javax.management.MBeanServer", ClassVisibilityContext.CLASS_LOOKUP));
+        assertFalse(factory.visibleToScripts("javax.script.ScriptEngine", ClassVisibilityContext.CLASS_LOOKUP));
     }
 
     @Test
@@ -670,6 +685,200 @@ class GraaljsContextIntegrationTest {
         assertEquals("string-int:a:1", bindings.getMember("stringIntResult").asString());
     }
 
+    @Test
+    void shouldDetectAmbiguousMethodOverloads() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        // process("a", "b") is ambiguous: both process(Object,String) and process(String,Object) match equally
+        assertThrows(IllegalStateException.class, () ->
+                context.eval("ambiguous.js", "ambiguousTarget.process('a', 'b');")
+        );
+    }
+
+    @Test
+    void shouldDispatchAbstractClassConstructorOverloads() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        // Test single-arg constructor
+        MultiConstructorAbstract singleArg = context.asAbstractClass(
+                context.eval("abstractCtor1.js", "({ work() { return 'single'; } })"),
+                MultiConstructorAbstract.class,
+                "tag1"
+        );
+        assertEquals("tag1", singleArg.tag());
+        assertEquals("single", singleArg.work());
+
+        // Test two-arg constructor
+        MultiConstructorAbstract twoArg = context.asAbstractClass(
+                context.eval("abstractCtor2.js", "({ work() { return 'double'; } })"),
+                MultiConstructorAbstract.class,
+                "tag2", 5
+        );
+        assertEquals("tag2:5", twoArg.tag());
+        assertEquals("double", twoArg.work());
+    }
+
+    @Test
+    void shouldExposeListProxyJsMethods() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("listMethods.js", """
+                bridgeList.push("a");
+                bridgeList.push("b");
+                bridgeList.push("c");
+                listLength = bridgeList.length;
+                joinResult = bridgeList.join("-");
+                includesA = bridgeList.includes("a");
+                includesZ = bridgeList.includes("z");
+                indexOfB = bridgeList.indexOf("b");
+                indexOfZ = bridgeList.indexOf("z");
+                mapped = bridgeList.map(function(v) { return v + "!"; }).join(",");
+                filtered = bridgeList.filter(function(v) { return v !== "b"; }).join(",");
+                found = bridgeList.find(function(v) { return v === "c"; });
+                sliced = bridgeList.slice(1, 3).join(",");
+                popped = bridgeList.pop();
+                afterPopLength = bridgeList.length;
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals(3, bindings.getMember("listLength").asInt());
+        assertEquals("a-b-c", bindings.getMember("joinResult").asString());
+        assertTrue(bindings.getMember("includesA").asBoolean());
+        assertFalse(bindings.getMember("includesZ").asBoolean());
+        assertEquals(1, bindings.getMember("indexOfB").asInt());
+        assertEquals(-1, bindings.getMember("indexOfZ").asInt());
+        assertEquals("a!,b!,c!", bindings.getMember("mapped").asString());
+        assertEquals("a,c", bindings.getMember("filtered").asString());
+        assertEquals("c", bindings.getMember("found").asString());
+        assertEquals("b,c", bindings.getMember("sliced").asString());
+        assertEquals("c", bindings.getMember("popped").asString());
+        assertEquals(2, bindings.getMember("afterPopLength").asInt());
+    }
+
+    @Test
+    void shouldExposeMapProxyJsMethods() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("mapMethods.js", """
+                bridgeMap.x = 10;
+                bridgeMap.y = 20;
+                mapSize = bridgeMap.size;
+                hasX = bridgeMap.has("x");
+                hasZ = bridgeMap.has("z");
+                forEachResult = [];
+                bridgeMap.forEach(function(value, key) {
+                    forEachResult.push(key + "=" + value);
+                });
+                forEachStr = forEachResult.join(",");
+                deletedX = bridgeMap.delete("x");
+                afterDeleteSize = bridgeMap.size;
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals(2, bindings.getMember("mapSize").asInt());
+        assertTrue(bindings.getMember("hasX").asBoolean());
+        assertFalse(bindings.getMember("hasZ").asBoolean());
+        assertTrue(bindings.getMember("forEachStr").asString().contains("x=10"));
+        assertTrue(bindings.getMember("forEachStr").asString().contains("y=20"));
+        assertTrue(bindings.getMember("deletedX").asBoolean());
+        assertEquals(1, bindings.getMember("afterDeleteSize").asInt());
+    }
+
+    @Test
+    void shouldExposeSetProxyJsMethods() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("setMethods.js", """
+                bridgeSet.add("x");
+                bridgeSet.add("y");
+                bridgeSet.add("x");
+                setSize = bridgeSet.size;
+                hasX = bridgeSet.has("x");
+                hasZ = bridgeSet.has("z");
+                forEachResult = [];
+                bridgeSet.forEach(function(value) {
+                    forEachResult.push(value);
+                });
+                forEachStr = forEachResult.join(",");
+                deletedX = bridgeSet.delete("x");
+                afterDeleteSize = bridgeSet.size;
+                arrayLength = bridgeSet.toArray().length;
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals(2, bindings.getMember("setSize").asInt());
+        assertTrue(bindings.getMember("hasX").asBoolean());
+        assertFalse(bindings.getMember("hasZ").asBoolean());
+        assertTrue(bindings.getMember("forEachStr").asString().contains("x"));
+        assertTrue(bindings.getMember("forEachStr").asString().contains("y"));
+        assertTrue(bindings.getMember("deletedX").asBoolean());
+        assertEquals(1, bindings.getMember("afterDeleteSize").asInt());
+        assertEquals(1, bindings.getMember("arrayLength").asInt());
+    }
+
+    @Test
+    void shouldBridgeForgeEventsToJsCallbacks() {
+        IEventBus testBus = BusBuilder.builder().build();
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        factory.setTestEventBus(testBus);
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        // Register a Forge event mapping via the factory hook
+        ForgeEventBridge bridge = factory.getEventBus(ScriptType.STARTUP).getForgeBridge();
+        bridge.registerMapping("test.event", TestForgeEvent.class);
+
+        // Subscribe from JS
+        context.eval("forgeEvents.js", """
+                forgeResult = null;
+                forgeListenerCount = events.onForge("test.event", function(event) {
+                    forgeResult = event.message();
+                });
+                forgeAvailable = events.forgeEvents();
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals(1, bindings.getMember("forgeListenerCount").asInt());
+
+        // Fire the Forge event
+        testBus.post(new TestForgeEvent("hello from forge"));
+
+        assertEquals("hello from forge", bindings.getMember("forgeResult").asString());
+        assertEquals(1, factory.getEventBus(ScriptType.STARTUP).forgeListenerCount("test.event"));
+
+        // Unsubscribe and verify
+        context.eval("forgeUnsubscribe.js", """
+                removable = function(event) {};
+                events.onForge("test.event", removable);
+                beforeRemove = events.forgeListenerCount("test.event");
+                events.offForge("test.event", removable);
+                afterRemove = events.forgeListenerCount("test.event");
+                """);
+
+        assertEquals(2, bindings.getMember("beforeRemove").asInt());
+        assertEquals(1, bindings.getMember("afterRemove").asInt());
+
+        // Close should clean up all Forge listeners
+        factory.close(ScriptType.STARTUP);
+        assertEquals(0, bridge.listenerCount("test.event"));
+    }
+
+    @Test
+    void shouldRejectUnknownForgeEventName() {
+        IEventBus testBus = BusBuilder.builder().build();
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        factory.setTestEventBus(testBus);
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        assertThrows(IllegalStateException.class, () ->
+                context.eval("unknownForge.js", "events.onForge('nonexistent', function() {});")
+        );
+    }
+
     private void writeScript(ScriptType type, String fileName, String content) throws IOException {
         Path dir = tempDir.resolve(type.directory);
         Files.createDirectories(dir);
@@ -678,10 +887,20 @@ class GraaljsContextIntegrationTest {
 
     private static class TestFactory extends GraaljsContextFactory {
         private final TestBindings bindings;
+        private IEventBus testEventBus;
 
         private TestFactory(Path scriptRoot, TestBindings bindings) {
             super(scriptRoot);
             this.bindings = bindings;
+        }
+
+        void setTestEventBus(IEventBus bus) {
+            this.testEventBus = bus;
+        }
+
+        @Override
+        protected IEventBus getForgeEventBus() {
+            return testEventBus != null ? testEventBus : BusBuilder.builder().build();
         }
 
         @Override
@@ -729,7 +948,9 @@ class GraaljsContextIntegrationTest {
                         return builder1.toString();
                     })
                     .add("visibilitySample", new VisibilitySample())
-                    .add("overloadTarget", new OverloadTarget());
+                    .add("overloadTarget", new OverloadTarget())
+                    .add("ambiguousTarget", new AmbiguousTarget())
+                    .addClass("MultiConstructorAbstract", MultiConstructorAbstract.class);
         }
     }
 
@@ -1001,6 +1222,52 @@ class GraaljsContextIntegrationTest {
         assertEquals("visible", result.getMember("publicValue").asString());
     }
 
+    @Test
+    void shouldBridgeFunctionalInterfaceArgumentsThroughProxy() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        // A JS function adapted as a functional interface should still bridge arguments
+        context.eval("functionalBridge.js", """
+                functionalResult = {};
+                functionalCallback = function(holder) {
+                    functionalResult.hasAlias = "aliasName" in holder;
+                    functionalResult.hasHidden = "secretField" in holder;
+                    functionalResult.aliasValue = holder.aliasName();
+                    functionalResult.publicValue = holder.publicField;
+                };
+                """);
+
+        Value callbackValue = context.getPolyglotContext().getBindings("js").getMember("functionalCallback");
+        BridgedArgCallback adapted = context.asInterface(callbackValue, BridgedArgCallback.class);
+
+        BridgedArgHolder holder = new BridgedArgHolder();
+        adapted.accept(holder);
+
+        Value result = context.getPolyglotContext().getBindings("js").getMember("functionalResult");
+        assertTrue(result.getMember("hasAlias").asBoolean(), "Functional interface should bridge args: @RemapForJS alias visible");
+        assertFalse(result.getMember("hasHidden").asBoolean(), "Functional interface should bridge args: @HideFromJS field hidden");
+        assertEquals("aliased", result.getMember("aliasValue").asString());
+        assertEquals("visible", result.getMember("publicValue").asString());
+    }
+
+    @Test
+    void shouldResetClientEventsStateWhenContextClosed() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+
+        // Simulate: create CLIENT context, then close it externally
+        factory.createAndLoad(ScriptType.CLIENT);
+        assertTrue(factory.getContext(ScriptType.CLIENT) != null);
+
+        factory.close(ScriptType.CLIENT);
+        assertNull(factory.getContext(ScriptType.CLIENT));
+
+        // After close, creating again should work
+        factory.createAndLoad(ScriptType.CLIENT);
+        assertTrue(factory.getContext(ScriptType.CLIENT) != null);
+        factory.close(ScriptType.CLIENT);
+    }
+
     public interface BridgedArgCallback {
         void accept(BridgedArgHolder holder);
     }
@@ -1040,6 +1307,50 @@ class GraaljsContextIntegrationTest {
 
         public String accept(String text, Object... rest) {
             return "string-varargs:" + text + ":" + rest.length;
+        }
+    }
+
+    public static class AmbiguousTarget {
+        public String process(Object a, String b) {
+            return "object-string:" + a + ":" + b;
+        }
+
+        public String process(String a, Object b) {
+            return "string-object:" + a + ":" + b;
+        }
+    }
+
+    public abstract static class MultiConstructorAbstract {
+        private final String tag;
+
+        protected MultiConstructorAbstract(String tag) {
+            this.tag = tag;
+        }
+
+        protected MultiConstructorAbstract(String tag, int count) {
+            this.tag = tag + ":" + count;
+        }
+
+        public String tag() {
+            return tag;
+        }
+
+        public abstract String work();
+    }
+
+    public static class TestForgeEvent extends Event {
+        private String message;
+
+        public TestForgeEvent() {
+            this.message = "";
+        }
+
+        public TestForgeEvent(String message) {
+            this.message = message;
+        }
+
+        public String message() {
+            return message;
         }
     }
 }

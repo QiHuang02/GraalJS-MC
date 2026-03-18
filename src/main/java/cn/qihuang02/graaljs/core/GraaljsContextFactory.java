@@ -4,6 +4,7 @@ import cn.qihuang02.graaljs.Graaljs;
 import cn.qihuang02.graaljs.binding.BindingsBuilder;
 import cn.qihuang02.graaljs.binding.ConsoleAPI;
 import cn.qihuang02.graaljs.binding.EventBusAPI;
+import cn.qihuang02.graaljs.binding.ForgeEventBridge;
 import cn.qihuang02.graaljs.binding.JavaAPI;
 import cn.qihuang02.graaljs.binding.JavaAdapterAPI;
 import cn.qihuang02.graaljs.binding.RuntimeAPI;
@@ -19,6 +20,8 @@ import cn.qihuang02.graaljs.typewrap.TypeWrapperFactory;
 import cn.qihuang02.graaljs.typewrap.TypeWrapperValidator;
 import cn.qihuang02.graaljs.typewrap.TypeWrappers;
 import cn.qihuang02.graaljs.util.ClassVisibilityContext;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.fml.loading.FMLPaths;
 
 import java.lang.reflect.Constructor;
@@ -40,9 +43,18 @@ public class GraaljsContextFactory {
             "java.lang.ProcessBuilder",
             "java.lang.System",
             "java.lang.reflect",
+            "java.lang.ClassLoader",
+            "java.lang.Thread",
+            "java.lang.invoke",
+            "java.lang.Class",
             "java.io.File",
             "java.nio.file",
-            "java.net"
+            "java.net",
+            "sun.",
+            "jdk.",
+            "com.sun.",
+            "javax.management",
+            "javax.script"
     );
 
     private final Path scriptRoot;
@@ -197,11 +209,28 @@ public class GraaljsContextFactory {
         builder.add("console", new ConsoleAPI(Graaljs.LOGGER));
     }
 
+    /**
+     * 注册 Forge 事件名到 Event 类的映射。子类可覆盖以添加自定义事件映射。
+     */
+    protected void configureForgeEvents(ScriptType type, ForgeEventBridge bridge) {
+        // 默认不注册任何映射，子类按需覆盖
+    }
+
+    /**
+     * 返回 Forge 事件总线。子类可覆盖以提供测试用的 mock 总线。
+     */
+    protected IEventBus getForgeEventBus() {
+        return MinecraftForge.EVENT_BUS;
+    }
+
     public GraaljsContext create(ScriptType type) {
         close(type);
 
         GraaljsContext context = createContext(type);
         EventBusAPI eventBus = new EventBusAPI(context);
+        ForgeEventBridge forgeBridge = new ForgeEventBridge(context, getForgeEventBus());
+        configureForgeEvents(type, forgeBridge);
+        eventBus.setForgeBridge(forgeBridge);
         SchedulerAPI scheduler = new SchedulerAPI(context);
         BindingsBuilder builder = new BindingsBuilder();
         configureBindings(type, builder);
@@ -326,6 +355,10 @@ public class GraaljsContextFactory {
             emitEvent(type, "context.closing", Map.of(
                     "directory", resolveScriptDirectory(type).toString()
             ));
+            EventBusAPI eventBus = eventBuses.get(type);
+            if (eventBus != null) {
+                eventBus.closeForgeBridge();
+            }
             SchedulerAPI scheduler = schedulers.remove(type);
             if (scheduler != null) {
                 scheduler.close();

@@ -59,14 +59,26 @@ public class JavaClassProxy extends AbstractReflectiveProxyObject implements Pro
     private ConstructorMatch resolve(Value[] arguments) {
         ConstructorMatch bestMatch = null;
         int bestScore = Integer.MAX_VALUE;
+        int bestCount = 0;
 
         List<Constructor<?>> constructors = cachedClassInfo.constructors();
         for (Constructor<?> constructor : constructors) {
             ConstructorMatch match = tryMatch(constructor, arguments);
-            if (match != null && match.score() < bestScore) {
-                bestMatch = match;
-                bestScore = match.score();
+            if (match != null) {
+                if (match.score() < bestScore) {
+                    bestMatch = match;
+                    bestScore = match.score();
+                    bestCount = 1;
+                } else if (match.score() == bestScore) {
+                    bestCount++;
+                }
             }
+        }
+
+        if (bestCount > 1) {
+            throw new AmbiguousOverloadException(
+                    "Ambiguous constructor overload: " + bestCount + " constructors match with score " + bestScore
+                            + " for " + type.getName() + " with " + arguments.length + " argument(s)");
         }
 
         return bestMatch;

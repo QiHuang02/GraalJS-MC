@@ -24,10 +24,6 @@ public final class InterfaceAdapter {
             throw new IllegalArgumentException("Target type is not an interface: " + interfaceType.getName());
         }
 
-        if (value.canExecute() && isFunctionalInterface(interfaceType)) {
-            return value.as(interfaceType);
-        }
-
         Object proxy = adaptInterfaces(context, value, new Class<?>[]{interfaceType});
         return interfaceType.cast(proxy);
     }

@@ -51,13 +51,25 @@ public class JavaMethodProxy implements ProxyExecutable {
     private MethodMatch resolve(Value[] arguments) {
         MethodMatch bestMatch = null;
         int bestScore = Integer.MAX_VALUE;
+        int bestCount = 0;
 
         for (Method method : methods) {
             MethodMatch match = tryMatch(method, arguments);
-            if (match != null && match.score() < bestScore) {
-                bestMatch = match;
-                bestScore = match.score();
+            if (match != null) {
+                if (match.score() < bestScore) {
+                    bestMatch = match;
+                    bestScore = match.score();
+                    bestCount = 1;
+                } else if (match.score() == bestScore) {
+                    bestCount++;
+                }
             }
+        }
+
+        if (bestCount > 1) {
+            throw new AmbiguousOverloadException(
+                    "Ambiguous overload: " + bestCount + " methods match with score " + bestScore
+                            + " for " + methods.get(0).getName() + " with " + arguments.length + " argument(s)");
         }
 
         return bestMatch;

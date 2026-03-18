@@ -104,6 +104,54 @@ public final class OverloadScoring {
     }
 
     /**
+     * 计算 Java 对象参数的匹配评分（用于 AbstractClassAdapter 等场景，参数已是 Java 对象）。
+     *
+     * @param source        原始 Java 参数
+     * @param parameterType 目标参数类型
+     * @param converted     转换后的 Java 对象
+     * @return 评分
+     */
+    public static int scoreJavaArg(Object source, Class<?> parameterType, Object converted) {
+        if (converted == null) {
+            return 10;
+        }
+
+        Class<?> boxedParam = box(parameterType);
+        Class<?> convertedClass = converted.getClass();
+
+        // 精确类型匹配
+        if (convertedClass == boxedParam) {
+            return 0;
+        }
+
+        // 子类匹配
+        if (parameterType.isInstance(converted)) {
+            return 1;
+        }
+
+        // 数值类型提升/收窄
+        if (source instanceof Number && Number.class.isAssignableFrom(boxedParam)) {
+            Class<?> sourceBoxed = box(source.getClass());
+            Integer sourceWidth = NUMERIC_WIDTH.get(sourceBoxed);
+            Integer paramWidth = NUMERIC_WIDTH.get(boxedParam);
+            if (sourceWidth != null && paramWidth != null) {
+                if (paramWidth >= sourceWidth) {
+                    return 3; // 无损提升
+                }
+                return 4; // 有损收窄
+            }
+            return 4;
+        }
+
+        // String/Boolean 转换
+        if (source instanceof String || source instanceof Boolean) {
+            return 5;
+        }
+
+        return 7;
+    }
+
+    /**
      * 根据 JS Value 的精度确定其"自然"Java 数值类型。
      */
     private static Class<?> naturalNumericType(Value value) {

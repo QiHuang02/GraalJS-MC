@@ -16,10 +16,25 @@ import java.util.Map;
 public class EventBusAPI {
     private final GraaljsContext context;
     private final Map<String, List<Listener>> listeners;
+    private ForgeEventBridge forgeBridge;
 
     public EventBusAPI(GraaljsContext context) {
         this.context = context;
         this.listeners = new LinkedHashMap<>();
+    }
+
+    /**
+     * 设置 Forge 事件桥接器。
+     */
+    public void setForgeBridge(ForgeEventBridge bridge) {
+        this.forgeBridge = bridge;
+    }
+
+    /**
+     * 获取 Forge 事件桥接器。
+     */
+    public ForgeEventBridge getForgeBridge() {
+        return forgeBridge;
     }
 
     public int on(String eventName, Value callback) {
@@ -71,6 +86,57 @@ public class EventBusAPI {
     public int listenerCount(String eventName) {
         List<Listener> callbacks = listeners.get(eventName);
         return callbacks == null ? 0 : callbacks.size();
+    }
+
+    /**
+     * 注册 Forge 事件监听器。
+     *
+     * @param eventName Forge 事件名（需先通过 ForgeEventBridge 注册映射）
+     * @param callback  JS 回调函数
+     * @return 当前事件名下的监听器数量
+     */
+    public int onForge(String eventName, Value callback) {
+        requireForgeBridge();
+        return forgeBridge.subscribe(eventName, callback);
+    }
+
+    /**
+     * 移除 Forge 事件监听器。
+     *
+     * @return 移除的监听器数量
+     */
+    public int offForge(String eventName, Value callback) {
+        requireForgeBridge();
+        return forgeBridge.unsubscribe(eventName, callback);
+    }
+
+    /**
+     * 返回所有可用的 Forge 事件名。
+     */
+    public String[] forgeEvents() {
+        if (forgeBridge == null) {
+            return new String[0];
+        }
+        return forgeBridge.availableEvents();
+    }
+
+    /**
+     * 返回指定 Forge 事件名下的活跃监听器数量。
+     */
+    public int forgeListenerCount(String eventName) {
+        if (forgeBridge == null) {
+            return 0;
+        }
+        return forgeBridge.listenerCount(eventName);
+    }
+
+    /**
+     * 关闭 Forge 事件桥接器，注销所有 Forge 事件监听器。
+     */
+    public void closeForgeBridge() {
+        if (forgeBridge != null) {
+            forgeBridge.close();
+        }
     }
 
     private int addListener(String eventName, Value callback, boolean once) {
@@ -131,5 +197,11 @@ public class EventBusAPI {
     }
 
     private record Listener(Value callback, boolean once) {
+    }
+
+    private void requireForgeBridge() {
+        if (forgeBridge == null) {
+            throw new IllegalStateException("Forge event bridge is not configured for this context");
+        }
     }
 }

@@ -98,18 +98,30 @@ public final class AbstractClassAdapter {
         Constructor<?> bestConstructor = null;
         Object[] bestArguments = null;
         int bestScore = Integer.MAX_VALUE;
+        int bestCount = 0;
 
         for (Constructor<?> constructor : generatedType.getConstructors()) {
             ConstructorMatch match = tryMatch(context, constructor, constructorArgs);
-            if (match != null && match.score() < bestScore) {
-                bestConstructor = constructor;
-                bestArguments = match.arguments();
-                bestScore = match.score();
+            if (match != null) {
+                if (match.score() < bestScore) {
+                    bestConstructor = constructor;
+                    bestArguments = match.arguments();
+                    bestScore = match.score();
+                    bestCount = 1;
+                } else if (match.score() == bestScore) {
+                    bestCount++;
+                }
             }
         }
 
         if (bestConstructor == null) {
             throw new IllegalArgumentException("No matching constructor for abstract adapter: " + generatedType.getSuperclass().getName());
+        }
+
+        if (bestCount > 1) {
+            throw new AmbiguousOverloadException(
+                    "Ambiguous constructor overload: " + bestCount + " constructors match with score " + bestScore
+                            + " for " + generatedType.getSuperclass().getName() + " with " + constructorArgs.length + " argument(s)");
         }
 
         try {
@@ -167,19 +179,7 @@ public final class AbstractClassAdapter {
     }
 
     private static int argumentScore(Object source, Class<?> parameterType, Object converted) {
-        if (converted == null) {
-            return 10;
-        }
-        if (parameterType.isInstance(converted)) {
-            return 0;
-        }
-        if (source instanceof Number) {
-            return 2;
-        }
-        if (source instanceof String || source instanceof Boolean) {
-            return 3;
-        }
-        return 5;
+        return OverloadScoring.scoreJavaArg(source, parameterType, converted);
     }
 
     private record GeneratedAdapter(Class<?> generatedType, Field interceptorField) {
