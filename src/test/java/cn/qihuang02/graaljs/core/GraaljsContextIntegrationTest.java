@@ -934,6 +934,56 @@ class GraaljsContextIntegrationTest {
         public abstract String greet(String name);
     }
 
+    @Test
+    void shouldWrapCallbackArgumentsThroughBridgeLayer() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        // Define a JS function that implements BridgedArgCallback
+        // When Java calls the callback with a BridgedArgHolder, JS should see
+        // the bridged version (aliasName visible, hiddenField not visible)
+        context.eval("bridgeCallback.js", """
+                result = {};
+                callback = {
+                    accept(holder) {
+                        result.hasAlias = "aliasName" in holder;
+                        result.hasHidden = "secretField" in holder;
+                        result.aliasValue = holder.aliasName();
+                        result.publicValue = holder.publicField;
+                    }
+                };
+                """);
+
+        Value callbackValue = context.getPolyglotContext().getBindings("js").getMember("callback");
+        BridgedArgCallback adapted = context.asInterface(callbackValue, BridgedArgCallback.class);
+
+        // Call from Java side with a Java object
+        BridgedArgHolder holder = new BridgedArgHolder();
+        adapted.accept(holder);
+
+        Value result = context.getPolyglotContext().getBindings("js").getMember("result");
+        assertTrue(result.getMember("hasAlias").asBoolean(), "Should see @RemapForJS alias");
+        assertFalse(result.getMember("hasHidden").asBoolean(), "Should not see @HideFromJS field");
+        assertEquals("aliased", result.getMember("aliasValue").asString());
+        assertEquals("visible", result.getMember("publicValue").asString());
+    }
+
+    public interface BridgedArgCallback {
+        void accept(BridgedArgHolder holder);
+    }
+
+    public static class BridgedArgHolder {
+        public String publicField = "visible";
+
+        @HideFromJS
+        public String secretField = "hidden";
+
+        @RemapForJS("aliasName")
+        public String getOriginalName() {
+            return "aliased";
+        }
+    }
+
     public interface Nicknamed {
         String nickname();
     }

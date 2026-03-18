@@ -49,9 +49,9 @@ public class ModuleLoader {
         Path callerDir = currentScriptDirectory();
         Path resolved = resolve(moduleId, callerDir);
 
-        Value cached = cache.get(resolved);
-        if (cached != null) {
-            return cached;
+        Value cachedModule = cache.get(resolved);
+        if (cachedModule != null) {
+            return cachedModule.getMember("exports");
         }
 
         return loadModule(resolved);
@@ -77,9 +77,25 @@ public class ModuleLoader {
             resolved = modulesRoot.resolve(moduleId).normalize();
         }
 
-        // 自动补 .js 后缀
-        if (!resolved.toString().endsWith(".js")) {
-            resolved = resolved.resolveSibling(resolved.getFileName().toString() + ".js");
+        // 如果已经是 .js 或 .json 文件，直接使用
+        String fileName = resolved.getFileName().toString();
+        if (!fileName.endsWith(".js") && !fileName.endsWith(".json")) {
+            // 尝试作为文件加 .js 后缀
+            Path withJs = resolved.resolveSibling(fileName + ".js");
+            if (Files.isRegularFile(withJs)) {
+                resolved = withJs;
+            } else if (Files.isDirectory(resolved)) {
+                // 尝试 index.js
+                Path indexJs = resolved.resolve("index.js");
+                if (Files.isRegularFile(indexJs)) {
+                    resolved = indexJs;
+                } else {
+                    // 回退到加 .js 后缀（会在 loadModule 中报错）
+                    resolved = withJs;
+                }
+            } else {
+                resolved = withJs;
+            }
         }
 
         // 安全校验：路径不能逃逸出 scriptRoot
@@ -106,6 +122,20 @@ public class ModuleLoader {
             throw new IllegalStateException("Failed to read module: " + modulePath, e);
         }
 
+        // 创建 module 和 exports 对象
+        Value moduleObj = context.getPolyglotContext().eval("js", "({ exports: {} })");
+
+        // 在执行前先缓存 module 对象，以支持循环依赖
+        cache.put(modulePath, moduleObj);
+
+        // JSON 模块：直接解析并赋值给 module.exports
+        if (modulePath.toString().endsWith(".json")) {
+            Value parsed = context.getPolyglotContext().eval("js",
+                    "JSON.parse(" + jsonStringLiteral(code) + ")");
+            moduleObj.putMember("exports", parsed);
+            return moduleObj.getMember("exports");
+        }
+
         // 包装为 CommonJS 模块函数
         String wrapped = MODULE_WRAPPER_PREFIX + code + MODULE_WRAPPER_SUFFIX;
         Source source;
@@ -115,9 +145,6 @@ public class ModuleLoader {
             throw new IllegalStateException("Failed to build module source: " + modulePath, e);
         }
 
-        // 创建 module 和 exports 对象
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        Value moduleObj = context.getPolyglotContext().eval("js", "({ exports: {} })");
         Value exportsObj = moduleObj.getMember("exports");
 
         String filename = modulePath.toString().replace('\\', '/');
@@ -143,10 +170,29 @@ public class ModuleLoader {
             popScriptPath();
         }
 
-        // 缓存 module.exports（支持整体替换）
-        Value result = moduleObj.getMember("exports");
-        cache.put(modulePath, result);
-        return result;
+        // 返回 module.exports（支持整体替换）
+        return moduleObj.getMember("exports");
+    }
+
+    /**
+     * 将字符串转为 JS 字符串字面量（用于 JSON.parse 参数）。
+     */
+    private static String jsonStringLiteral(String raw) {
+        StringBuilder sb = new StringBuilder(raw.length() + 16);
+        sb.append('"');
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            switch (c) {
+                case '"' -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> sb.append(c);
+            }
+        }
+        sb.append('"');
+        return sb.toString();
     }
 
     /**

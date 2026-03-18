@@ -108,19 +108,23 @@ public final class InterfaceAdapter {
             }
 
             Object[] convertedArgs = args == null ? new Object[0] : args;
+            Object[] jsArgs = new Object[convertedArgs.length];
+            for (int i = 0; i < convertedArgs.length; i++) {
+                jsArgs[i] = context.javaToJs(convertedArgs[i]);
+            }
             Value member = null;
             if (target.hasMember(method.getName())) {
                 member = target.getMember(method.getName());
             }
 
             if (member != null && member.canExecute()) {
-                return context.jsToJava(member.execute(convertedArgs), method.getGenericReturnType());
+                return context.jsToJava(member.execute(jsArgs), method.getGenericReturnType());
             }
             if (target.canInvokeMember(method.getName())) {
-                return context.jsToJava(target.invokeMember(method.getName(), convertedArgs), method.getGenericReturnType());
+                return context.jsToJava(target.invokeMember(method.getName(), jsArgs), method.getGenericReturnType());
             }
             if (target.canExecute()) {
-                return context.jsToJava(target.execute(convertedArgs), method.getGenericReturnType());
+                return context.jsToJava(target.execute(jsArgs), method.getGenericReturnType());
             }
 
             throw new IllegalStateException("JS value does not implement method '" + method.getName() + "' for interface " + contract.primaryInterface().getName());

@@ -239,6 +239,60 @@ class GraaljsSchedulerTest {
         assertEquals(0, factory.tickScheduler(ScriptType.CLIENT, 100));
     }
 
+    @Test
+    void shouldNotFireEarlyWhenRegisteredLate() {
+        TestFactory factory = new TestFactory(tempDir);
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        // Advance time to 5000ms first
+        factory.tickScheduler(ScriptType.STARTUP, 5000);
+
+        // Register setTimeout at currentTimeMs=5000, delay=100 → should fire at 5100
+        context.eval("lateTimeout.js", """
+                fired = false;
+                scheduler.setTimeout(() => { fired = true; }, 100);
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+
+        // tick(5050) should NOT fire (5050 < 5100)
+        factory.tickScheduler(ScriptType.STARTUP, 5050);
+        assertFalse(bindings.getMember("fired").asBoolean());
+
+        // tick(5100) should fire (5100 >= 5100)
+        factory.tickScheduler(ScriptType.STARTUP, 5100);
+        assertTrue(bindings.getMember("fired").asBoolean());
+    }
+
+    @Test
+    void shouldFireIntervalCorrectlyAfterLateRegistration() {
+        TestFactory factory = new TestFactory(tempDir);
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        // Advance time to 5000ms first
+        factory.tickScheduler(ScriptType.STARTUP, 5000);
+
+        // Register setInterval at currentTimeMs=5000, interval=100 → first fire at 5100
+        context.eval("lateInterval.js", """
+                count = 0;
+                scheduler.setInterval(() => { count = count + 1; }, 100);
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+
+        // tick(5050) should NOT fire
+        factory.tickScheduler(ScriptType.STARTUP, 5050);
+        assertEquals(0, bindings.getMember("count").asInt());
+
+        // tick(5100) should fire once
+        factory.tickScheduler(ScriptType.STARTUP, 5100);
+        assertEquals(1, bindings.getMember("count").asInt());
+
+        // tick(5200) should fire again
+        factory.tickScheduler(ScriptType.STARTUP, 5200);
+        assertEquals(2, bindings.getMember("count").asInt());
+    }
+
     private static class TestFactory extends GraaljsContextFactory {
         private TestFactory(Path scriptRoot) {
             super(scriptRoot);

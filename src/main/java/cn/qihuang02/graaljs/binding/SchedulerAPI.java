@@ -17,6 +17,7 @@ public class SchedulerAPI {
     private final GraaljsContext context;
     private final AtomicInteger nextId = new AtomicInteger(1);
     private final Map<Integer, ScheduledTask> tasks = new ConcurrentHashMap<>();
+    private long currentTimeMs = 0L;
 
     public SchedulerAPI(GraaljsContext context) {
         this.context = context;
@@ -33,7 +34,7 @@ public class SchedulerAPI {
             delayMs = 0;
         }
         int id = nextId.getAndIncrement();
-        tasks.put(id, new ScheduledTask(id, callback, delayMs, 0, delayMs, false));
+        tasks.put(id, new ScheduledTask(id, callback, delayMs, 0, currentTimeMs + delayMs, false));
         return id;
     }
 
@@ -48,7 +49,7 @@ public class SchedulerAPI {
             throw new IllegalArgumentException("Interval must be positive");
         }
         int id = nextId.getAndIncrement();
-        tasks.put(id, new ScheduledTask(id, callback, intervalMs, intervalMs, intervalMs, false));
+        tasks.put(id, new ScheduledTask(id, callback, intervalMs, intervalMs, currentTimeMs + intervalMs, false));
         return id;
     }
 
@@ -77,6 +78,7 @@ public class SchedulerAPI {
      * @return 本次 tick 中执行的回调数量
      */
     public int tick(long currentTimeMs) {
+        this.currentTimeMs = currentTimeMs;
         int fired = 0;
         Iterator<Map.Entry<Integer, ScheduledTask>> iterator = tasks.entrySet().iterator();
         while (iterator.hasNext()) {

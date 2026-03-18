@@ -208,12 +208,16 @@ public final class AbstractClassAdapter {
         @RuntimeType
         public Object intercept(@This Object self, @Origin Method method, @AllArguments Object[] args) {
             Object[] safeArgs = args == null ? new Object[0] : args;
+            Object[] jsArgs = new Object[safeArgs.length];
+            for (int i = 0; i < safeArgs.length; i++) {
+                jsArgs[i] = context.javaToJs(safeArgs[i]);
+            }
             Value member = target.hasMember(method.getName()) ? target.getMember(method.getName()) : null;
             if (member != null && member.canExecute()) {
-                return context.jsToJava(member.execute(safeArgs), method.getGenericReturnType());
+                return context.jsToJava(member.execute(jsArgs), method.getGenericReturnType());
             }
             if (target.canInvokeMember(method.getName())) {
-                return context.jsToJava(target.invokeMember(method.getName(), safeArgs), method.getGenericReturnType());
+                return context.jsToJava(target.invokeMember(method.getName(), jsArgs), method.getGenericReturnType());
             }
             throw new IllegalStateException("JS value does not implement abstract method '" + method.getName()
                     + "' for " + signature.superClass().getName() + " with args " + Arrays.toString(safeArgs));

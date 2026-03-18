@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -194,6 +195,66 @@ class GraaljsModuleTest {
 
         context.close();
         assertEquals(0, context.getModuleLoader().getCache().size());
+    }
+
+    @Test
+    void shouldHandleCircularDependency() throws IOException {
+        // A requires B, B requires A — should not infinite loop
+        writeScript("startup_scripts/main.js", """
+                var a = require('./a');
+                resultA = a.name;
+                resultFromB = a.fromB;
+                """);
+        writeScript("startup_scripts/a.js", """
+                exports.name = 'moduleA';
+                var b = require('./b');
+                exports.fromB = b.name;
+                """);
+        writeScript("startup_scripts/b.js", """
+                var a = require('./a');
+                exports.name = 'moduleB';
+                exports.fromA = a.name;
+                """);
+
+        GraaljsContext context = createAndLoad();
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("moduleA", bindings.getMember("resultA").asString());
+        assertEquals("moduleB", bindings.getMember("resultFromB").asString());
+        context.close();
+    }
+
+    @Test
+    void shouldResolveIndexJs() throws IOException {
+        writeScript("startup_scripts/main.js", """
+                var lib = require('./lib');
+                result = lib.value;
+                """);
+        writeScript("startup_scripts/lib/index.js", """
+                exports.value = 'from-index';
+                """);
+
+        GraaljsContext context = createAndLoad();
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("from-index", bindings.getMember("result").asString());
+        context.close();
+    }
+
+    @Test
+    void shouldRequireJsonModule() throws IOException {
+        writeScript("startup_scripts/main.js", """
+                var config = require('./config.json');
+                resultName = config.name;
+                resultVersion = config.version;
+                """);
+        writeScript("startup_scripts/config.json", """
+                {"name": "test-mod", "version": "1.0.0"}
+                """);
+
+        GraaljsContext context = createAndLoad();
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("test-mod", bindings.getMember("resultName").asString());
+        assertEquals("1.0.0", bindings.getMember("resultVersion").asString());
+        context.close();
     }
 
     private GraaljsContext createAndLoad() {
