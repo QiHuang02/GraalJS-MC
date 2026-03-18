@@ -10,6 +10,7 @@ import net.minecraftforge.event.server.ServerStartedEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.loading.FMLEnvironment;
 import net.minecraftforge.server.ServerLifecycleHooks;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
@@ -40,6 +41,20 @@ public class Graaljs {
 
     public static GraaljsContextFactory getFactory() {
         return factory;
+    }
+
+    /**
+     * 完全关闭所有上下文，包括客户端状态重置。
+     * 在 mod 卸载或需要完全重置时调用。
+     */
+    public static void shutdownAll() {
+        // 客户端环境下先关闭 ClientEvents 状态
+        if (FMLEnvironment.dist.isClient()) {
+            ClientEvents.shutdown();
+        }
+        if (factory != null) {
+            factory.closeAll();
+        }
     }
 
     @SubscribeEvent
