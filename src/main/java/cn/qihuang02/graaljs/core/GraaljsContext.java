@@ -66,7 +66,16 @@ public class GraaljsContext {
 
     public void initialize(Map<String, Object> bindings) {
         context = Context.newBuilder("js")
-                .allowHostAccess(org.graalvm.polyglot.HostAccess.ALL)
+                .allowHostAccess(org.graalvm.polyglot.HostAccess.newBuilder()
+                        .allowPublicAccess(false)
+                        .allowAllImplementations(true)
+                        .allowAllClassImplementations(true)
+                        .allowArrayAccess(true)
+                        .allowListAccess(true)
+                        .allowMapAccess(true)
+                        .allowIterableAccess(true)
+                        .allowIteratorAccess(true)
+                        .build())
                 .allowHostClassLookup(className -> factory.visibleToScripts(className, ClassVisibilityContext.BINDING))
                 .allowExperimentalOptions(true)
                 .option("js.ecmascript-version", "2022")

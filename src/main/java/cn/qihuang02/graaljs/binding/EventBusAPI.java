@@ -1,5 +1,6 @@
 package cn.qihuang02.graaljs.binding;
 
+import cn.qihuang02.graaljs.Graaljs;
 import cn.qihuang02.graaljs.core.GraaljsContext;
 import org.graalvm.polyglot.Value;
 
@@ -102,7 +103,11 @@ public class EventBusAPI {
         Iterator<Listener> iterator = eventListeners.iterator();
         while (iterator.hasNext()) {
             Listener listener = iterator.next();
-            listener.callback().execute(jsPayload);
+            try {
+                listener.callback().execute(jsPayload);
+            } catch (Exception e) {
+                Graaljs.LOGGER.error("Event listener error for '{}': {}", eventName, e.getMessage(), e);
+            }
             delivered++;
             if (listener.once()) {
                 iterator.remove();

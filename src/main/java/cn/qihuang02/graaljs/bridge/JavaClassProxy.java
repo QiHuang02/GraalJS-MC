@@ -98,7 +98,7 @@ public class JavaClassProxy extends AbstractReflectiveProxyObject implements Pro
                     score += argumentScore(arguments[j], componentType, converted);
                 }
                 invocationArguments[i] = array;
-                return new ConstructorMatch(constructor, invocationArguments, score);
+                return new ConstructorMatch(constructor, invocationArguments, score + OverloadScoring.varargsPenalty());
             }
 
             Object converted = convertArgument(arguments[i], genericParameterTypes[i]);
@@ -125,22 +125,7 @@ public class JavaClassProxy extends AbstractReflectiveProxyObject implements Pro
     }
 
     private int argumentScore(Value argument, Class<?> parameterType, Object converted) {
-        if (converted == null) {
-            return 10;
-        }
-        if (parameterType.isInstance(converted)) {
-            return 0;
-        }
-        if (argument.isHostObject()) {
-            return 1;
-        }
-        if (argument.isNumber()) {
-            return 2;
-        }
-        if (argument.isString() || argument.isBoolean()) {
-            return 3;
-        }
-        return 5;
+        return OverloadScoring.score(argument, parameterType, converted);
     }
 
     private record ConstructorMatch(Constructor<?> constructor, Object[] arguments, int score) {

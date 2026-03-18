@@ -89,7 +89,15 @@ public class SchedulerAPI {
                 continue;
             }
             if (currentTimeMs >= task.nextFireTimeMs) {
-                task.callback.execute();
+                try {
+                    task.callback.execute();
+                } catch (Exception e) {
+                    context.getFactory().getErrorReporter().error(
+                            context,
+                            "Scheduler callback error (id=" + task.id + "): " + e.getMessage(),
+                            "scheduler", -1, "", -1, e
+                    );
+                }
                 fired++;
                 if (task.intervalMs > 0) {
                     task.nextFireTimeMs = currentTimeMs + task.intervalMs;

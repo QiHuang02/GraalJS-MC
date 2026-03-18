@@ -293,6 +293,21 @@ class GraaljsSchedulerTest {
         assertEquals(2, bindings.getMember("count").asInt());
     }
 
+    @Test
+    void shouldContinueTickingAfterCallbackError() {
+        TestFactory factory = new TestFactory(tempDir);
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("errorIsolation.js", """
+                secondFired = false;
+                scheduler.setTimeout(() => { throw new Error('boom'); }, 100);
+                scheduler.setTimeout(() => { secondFired = true; }, 100);
+                """);
+
+        factory.tickScheduler(ScriptType.STARTUP, 100);
+        assertTrue(context.getPolyglotContext().getBindings("js").getMember("secondFired").asBoolean());
+    }
+
     private static class TestFactory extends GraaljsContextFactory {
         private TestFactory(Path scriptRoot) {
             super(scriptRoot);

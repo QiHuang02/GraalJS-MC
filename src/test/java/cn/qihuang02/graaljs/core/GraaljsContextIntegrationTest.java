@@ -638,6 +638,38 @@ class GraaljsContextIntegrationTest {
         assertEquals("rt:runtime-template:alex|runtime-template-nick", bindings.getMember("runtimeSummary").asString());
     }
 
+    @Test
+    void shouldContinueEventDispatchAfterListenerError() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("eventErrorIsolation.js", """
+                secondReceived = false;
+                events.on('test', payload => { throw new Error('listener boom'); });
+                events.on('test', payload => { secondReceived = true; });
+                events.emit('test', { data: 1 });
+                """);
+
+        assertTrue(context.getPolyglotContext().getBindings("js").getMember("secondReceived").asBoolean());
+    }
+
+    @Test
+    void shouldResolveOverloadedMethodsByPrecision() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("overload.js", """
+                intResult = overloadTarget.accept(42);
+                nullResult = overloadTarget.accept(null);
+                stringIntResult = overloadTarget.accept("a", 1);
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("int:42", bindings.getMember("intResult").asString());
+        assertEquals("object:null", bindings.getMember("nullResult").asString());
+        assertEquals("string-int:a:1", bindings.getMember("stringIntResult").asString());
+    }
+
     private void writeScript(ScriptType type, String fileName, String content) throws IOException {
         Path dir = tempDir.resolve(type.directory);
         Files.createDirectories(dir);
@@ -696,7 +728,8 @@ class GraaljsContextIntegrationTest {
                         }
                         return builder1.toString();
                     })
-                    .add("visibilitySample", new VisibilitySample());
+                    .add("visibilitySample", new VisibilitySample())
+                    .add("overloadTarget", new OverloadTarget());
         }
     }
 
@@ -986,5 +1019,27 @@ class GraaljsContextIntegrationTest {
 
     public interface Nicknamed {
         String nickname();
+    }
+
+    public static class OverloadTarget {
+        public String accept(int value) {
+            return "int:" + value;
+        }
+
+        public String accept(long value) {
+            return "long:" + value;
+        }
+
+        public String accept(Object value) {
+            return "object:" + value;
+        }
+
+        public String accept(String text, int number) {
+            return "string-int:" + text + ":" + number;
+        }
+
+        public String accept(String text, Object... rest) {
+            return "string-varargs:" + text + ":" + rest.length;
+        }
     }
 }

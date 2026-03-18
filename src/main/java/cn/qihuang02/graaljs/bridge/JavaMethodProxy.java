@@ -90,7 +90,7 @@ public class JavaMethodProxy implements ProxyExecutable {
                     score += conversionScore(arguments[i + j], componentType, converted);
                 }
                 invocationArguments[i] = array;
-                return new MethodMatch(method, invocationArguments, score);
+                return new MethodMatch(method, invocationArguments, score + OverloadScoring.varargsPenalty());
             }
 
             Object converted = convertArgument(arguments[i], genericParameterTypes[i]);
@@ -117,22 +117,7 @@ public class JavaMethodProxy implements ProxyExecutable {
     }
 
     private int conversionScore(Value argument, Class<?> parameterType, Object converted) {
-        if (converted == null) {
-            return 10;
-        }
-        if (parameterType.isInstance(converted)) {
-            return 0;
-        }
-        if (argument.isHostObject()) {
-            return 1;
-        }
-        if (argument.isNumber()) {
-            return 2;
-        }
-        if (argument.isString() || argument.isBoolean()) {
-            return 3;
-        }
-        return 5;
+        return OverloadScoring.score(argument, parameterType, converted);
     }
 
     private record MethodMatch(Method method, Object[] arguments, int score) {

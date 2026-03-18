@@ -21,41 +21,48 @@ public class Graaljs {
     public static final String MODID = "graaljs";
     public static final Logger LOGGER = LogUtils.getLogger();
 
-    private final GraaljsContextFactory factory;
+    private static GraaljsContextFactory factory;
+
+    private final GraaljsContextFactory localFactory;
 
     public Graaljs() {
         LOGGER.info("GraalJS-MC initializing...");
 
-        factory = new GraaljsContextFactory();
-        factory.createAndLoad(ScriptType.STARTUP);
-        factory.emitEvent(ScriptType.STARTUP, "game.startup", Map.of(
+        localFactory = new GraaljsContextFactory();
+        factory = localFactory;
+        localFactory.createAndLoad(ScriptType.STARTUP);
+        localFactory.emitEvent(ScriptType.STARTUP, "game.startup", Map.of(
                 "modId", MODID
         ));
 
         MinecraftForge.EVENT_BUS.register(this);
     }
 
+    public static GraaljsContextFactory getFactory() {
+        return factory;
+    }
+
     @SubscribeEvent
     public void onServerStarting(@NotNull ServerStartingEvent event) {
-        factory.createAndLoad(ScriptType.SERVER);
-        factory.emitEvent(ScriptType.SERVER, "server.starting", Map.of(
+        localFactory.createAndLoad(ScriptType.SERVER);
+        localFactory.emitEvent(ScriptType.SERVER, "server.starting", Map.of(
                 "server", event.getServer()
         ));
     }
 
     @SubscribeEvent
     public void onServerStarted(@NotNull ServerStartedEvent event) {
-        factory.emitEvent(ScriptType.SERVER, "server.started", Map.of(
+        localFactory.emitEvent(ScriptType.SERVER, "server.started", Map.of(
                 "server", event.getServer()
         ));
     }
 
     @SubscribeEvent
     public void onServerStopping(@NotNull ServerStoppingEvent event) {
-        factory.emitEvent(ScriptType.SERVER, "server.stopping", Map.of(
+        localFactory.emitEvent(ScriptType.SERVER, "server.stopping", Map.of(
                 "server", event.getServer()
         ));
-        factory.close(ScriptType.SERVER);
+        localFactory.close(ScriptType.SERVER);
     }
 
     @SubscribeEvent
@@ -63,7 +70,7 @@ public class Graaljs {
         if (event.phase == TickEvent.Phase.END) {
             var server = ServerLifecycleHooks.getCurrentServer();
             if (server != null) {
-                factory.tickScheduler(ScriptType.SERVER, server.getTickCount() * 50L);
+                localFactory.tickScheduler(ScriptType.SERVER, server.getTickCount() * 50L);
             }
         }
     }
