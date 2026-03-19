@@ -22,12 +22,21 @@ import java.util.Set;
  * 单个类型的可见成员缓存。
  */
 public final class CachedClassInfo {
+
+    /**
+     * 合成的 Bean 属性（getter/setter 对）。
+     */
+    public record BeanProperty(String name, Method getter, Method setter, Class<?> type) {
+    }
+
     private final CachedClassStorage storage;
     private final Class<?> type;
     private final Map<String, Field> instanceFields;
     private final Map<String, Field> staticFields;
     private final Map<String, List<Method>> instanceMethods;
     private final Map<String, List<Method>> staticMethods;
+    private final Map<String, BeanProperty> instanceBeanProperties;
+    private final Map<String, BeanProperty> staticBeanProperties;
     private final List<Constructor<?>> constructors;
     private final Set<String> instanceMemberKeys;
     private final Set<String> staticMemberKeys;
@@ -40,17 +49,22 @@ public final class CachedClassInfo {
         this.staticFields = new LinkedHashMap<>();
         this.instanceMethods = new LinkedHashMap<>();
         this.staticMethods = new LinkedHashMap<>();
+        this.instanceBeanProperties = new LinkedHashMap<>();
+        this.staticBeanProperties = new LinkedHashMap<>();
         this.constructors = new ArrayList<>();
         this.hidden = isHidden(type);
 
         if (!hidden) {
             collectFields(type.getFields());
             collectMethods(type.getMethods());
+            synthesizeBeanProperties();
             collectConstructors(type.getConstructors());
         }
 
-        this.instanceMemberKeys = Set.copyOf(joinKeys(instanceFields.keySet(), instanceMethods.keySet()));
-        this.staticMemberKeys = Set.copyOf(joinKeys(staticFields.keySet(), staticMethods.keySet()));
+        this.instanceMemberKeys = Set.copyOf(joinKeys(
+                instanceFields.keySet(), instanceMethods.keySet(), instanceBeanProperties.keySet()));
+        this.staticMemberKeys = Set.copyOf(joinKeys(
+                staticFields.keySet(), staticMethods.keySet(), staticBeanProperties.keySet()));
     }
 
     public Class<?> type() {
@@ -67,6 +81,10 @@ public final class CachedClassInfo {
 
     public List<Method> findMethods(String name, boolean staticOnly) {
         return staticOnly ? staticMethods.get(name) : instanceMethods.get(name);
+    }
+
+    public BeanProperty findBeanProperty(String name, boolean staticOnly) {
+        return staticOnly ? staticBeanProperties.get(name) : instanceBeanProperties.get(name);
     }
 
     public Set<String> memberKeys(boolean staticOnly) {
@@ -138,6 +156,92 @@ public final class CachedClassInfo {
         }
     }
 
+    /**
+     * 从已收集的方法中合成 Bean 属性。
+     * <p>识别 getXxx()/isXxx() (无参、有返回值) 和 setXxx(T) (单参、void) 模式。
+     * <p>跳过条件：属性名与已有 field 同名、属性名与方法别名冲突。
+     */
+    private void synthesizeBeanProperties() {
+        synthesizeBeanPropertiesFor(instanceMethods, instanceFields, instanceBeanProperties);
+        synthesizeBeanPropertiesFor(staticMethods, staticFields, staticBeanProperties);
+    }
+
+    private void synthesizeBeanPropertiesFor(
+            Map<String, List<Method>> methods,
+            Map<String, Field> fields,
+            Map<String, BeanProperty> target) {
+
+        // 收集所有原始方法（按原始名分组）
+        Map<String, Method> getters = new LinkedHashMap<>();
+        Map<String, Method> isGetters = new LinkedHashMap<>();
+        Map<String, Method> setters = new LinkedHashMap<>();
+
+        for (Map.Entry<String, List<Method>> entry : methods.entrySet()) {
+            for (Method method : entry.getValue()) {
+                String name = method.getName();
+                if (name.length() > 3 && name.startsWith("get")
+                        && method.getParameterCount() == 0
+                        && method.getReturnType() != void.class) {
+                    String propName = decapitalize(name.substring(3));
+                    if (propName != null) {
+                        getters.putIfAbsent(propName, method);
+                    }
+                } else if (name.length() > 2 && name.startsWith("is")
+                        && method.getParameterCount() == 0
+                        && (method.getReturnType() == boolean.class || method.getReturnType() == Boolean.class)) {
+                    String propName = decapitalize(name.substring(2));
+                    if (propName != null) {
+                        isGetters.putIfAbsent(propName, method);
+                    }
+                } else if (name.length() > 3 && name.startsWith("set")
+                        && method.getParameterCount() == 1
+                        && method.getReturnType() == void.class) {
+                    String propName = decapitalize(name.substring(3));
+                    if (propName != null) {
+                        setters.putIfAbsent(propName, method);
+                    }
+                }
+            }
+        }
+
+        // 合并 getter 和 isGetter（get 优先）
+        Set<String> allPropNames = new LinkedHashSet<>(getters.keySet());
+        allPropNames.addAll(isGetters.keySet());
+        allPropNames.addAll(setters.keySet());
+
+        for (String propName : allPropNames) {
+            // 跳过：与已有 field 同名
+            if (fields.containsKey(propName)) {
+                continue;
+            }
+            // 跳过：与已有方法别名冲突（说明 @RemapPrefixForJS 或 @RemapForJS 已注册了同名方法）
+            if (methods.containsKey(propName)) {
+                continue;
+            }
+
+            Method getter = getters.get(propName);
+            if (getter == null) {
+                getter = isGetters.get(propName);
+            }
+            Method setter = setters.get(propName);
+
+            // 至少有 getter 或 setter
+            if (getter == null && setter == null) {
+                continue;
+            }
+
+            Class<?> propType = getter != null ? getter.getReturnType() : setter.getParameterTypes()[0];
+            target.put(propName, new BeanProperty(propName, getter, setter, propType));
+        }
+    }
+
+    private static String decapitalize(String suffix) {
+        if (suffix.isEmpty()) {
+            return null;
+        }
+        return Character.toLowerCase(suffix.charAt(0)) + suffix.substring(1);
+    }
+
     private boolean include(Member member) {
         int modifiers = member.getModifiers();
         return Modifier.isPublic(modifiers) || storage.includeProtected() && Modifier.isProtected(modifiers);
@@ -152,9 +256,10 @@ public final class CachedClassInfo {
         return true;
     }
 
-    private static Set<String> joinKeys(Collection<String> fields, Collection<String> methods) {
+    private static Set<String> joinKeys(Collection<String> fields, Collection<String> methods, Collection<String> beanProperties) {
         LinkedHashSet<String> keys = new LinkedHashSet<>(fields);
         keys.addAll(methods);
+        keys.addAll(beanProperties);
         return keys;
     }
 

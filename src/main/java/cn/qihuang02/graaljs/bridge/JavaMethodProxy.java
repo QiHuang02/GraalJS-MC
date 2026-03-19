@@ -3,6 +3,7 @@ package cn.qihuang02.graaljs.bridge;
 import cn.qihuang02.graaljs.core.GraaljsContext;
 import cn.qihuang02.graaljs.typewrap.GenericTypeInfo;
 import cn.qihuang02.graaljs.util.ClassVisibilityContext;
+import cn.qihuang02.graaljs.util.ReturnsSelf;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyExecutable;
 
@@ -27,12 +28,21 @@ public class JavaMethodProxy implements ProxyExecutable {
      * 仅当方法列表有多个重载时启用缓存。
      */
     private final Map<ArgSignature, Method> resolveCache;
+    /** 拥有此方法代理的 ProxyObject，用于 @ReturnsSelf 优化 */
+    private Object ownerProxy;
 
     public JavaMethodProxy(GraaljsContext context, Object target, List<Method> methods) {
         this.context = context;
         this.target = target;
         this.methods = methods;
         this.resolveCache = methods.size() > 1 ? new ConcurrentHashMap<>() : null;
+    }
+
+    /**
+     * 设置拥有此方法代理的 ProxyObject，用于 @ReturnsSelf 优化。
+     */
+    public void setOwnerProxy(Object ownerProxy) {
+        this.ownerProxy = ownerProxy;
     }
 
     @Override
@@ -44,6 +54,12 @@ public class JavaMethodProxy implements ProxyExecutable {
 
         try {
             Object result = match.method().invoke(target, match.arguments());
+            // @ReturnsSelf 优化：如果方法标注了 @ReturnsSelf 且返回值就是 target，
+            // 直接返回原始代理对象避免重新包装
+            if (ownerProxy != null && result == target
+                    && match.method().isAnnotationPresent(ReturnsSelf.class)) {
+                return ownerProxy;
+            }
             return context.javaToJs(result);
         } catch (IllegalAccessException | InvocationTargetException exception) {
             Throwable cause = exception instanceof InvocationTargetException && exception.getCause() != null

@@ -7,10 +7,12 @@ import java.lang.reflect.GenericArrayType;
 
 /**
  * 轻量的泛型描述符，封装 java.lang.reflect.Type 的解析逻辑。
+ * 内部委托给 {@link TypeInfo} 进行类型语义描述。
  */
 public final class GenericTypeInfo {
     private final Class<?> rawType;
     private final Type[] typeArguments;
+    private TypeInfo typeInfo; // 延迟构建
 
     private GenericTypeInfo(Class<?> rawType, Type[] typeArguments) {
         this.rawType = rawType;
@@ -78,5 +80,30 @@ public final class GenericTypeInfo {
 
     public boolean hasTypeArguments() {
         return typeArguments.length > 0;
+    }
+
+    /**
+     * 转换为 TypeInfo 语义描述符。
+     */
+    public TypeInfo toTypeInfo() {
+        if (typeInfo == null) {
+            if (typeArguments.length > 0) {
+                TypeInfo[] argInfos = new TypeInfo[typeArguments.length];
+                for (int i = 0; i < typeArguments.length; i++) {
+                    argInfos[i] = TypeInfo.of(typeArguments[i]);
+                }
+                typeInfo = new TypeInfo.ParameterizedTypeInfo(rawType, argInfos);
+            } else {
+                typeInfo = TypeInfo.ofClass(rawType);
+            }
+        }
+        return typeInfo;
+    }
+
+    /**
+     * 用于错误信息的可读类型描述，委托给 TypeInfo。
+     */
+    public String describe() {
+        return toTypeInfo().describe();
     }
 }

@@ -4,6 +4,9 @@ import cn.qihuang02.graaljs.Graaljs;
 import cn.qihuang02.graaljs.bridge.AbstractClassAdapter;
 import cn.qihuang02.graaljs.bridge.InterfaceAdapter;
 import cn.qihuang02.graaljs.bridge.ProxyValue;
+import cn.qihuang02.graaljs.error.ScriptException;
+import cn.qihuang02.graaljs.error.TypeConversionException;
+import cn.qihuang02.graaljs.error.WrappedJavaException;
 import cn.qihuang02.graaljs.typewrap.EnumTypeWrapper;
 import cn.qihuang02.graaljs.typewrap.GenericTypeInfo;
 import cn.qihuang02.graaljs.typewrap.TypeWrapperFactory;
@@ -260,7 +263,9 @@ public class GraaljsContext {
             return wrapperFactory.wrap(this, normalized, target);
         }
 
-        throw new IllegalArgumentException("Unsupported JS to Java conversion: " + normalized.getClass().getName() + " -> " + target.getName());
+        throw new TypeConversionException(
+                "Unsupported JS to Java conversion: " + normalized.getClass().getName() + " -> " + target.getName(),
+                target, normalized);
     }
 
     /**
@@ -377,13 +382,16 @@ public class GraaljsContext {
                         ? hostException.getClass().getSimpleName()
                         : hostException.getClass().getSimpleName() + ": " + hostMessage;
                 reportedCause = hostException;
+                // 包装为 WrappedJavaException
+                factory.getErrorReporter().error(this, message, sourceName, line, lineSource, lineOffset, reportedCause);
+                return new WrappedJavaException(message, hostException);
             } else {
                 message = "Host exception is not visible to scripts";
             }
         }
 
         factory.getErrorReporter().error(this, message, sourceName, line, lineSource, lineOffset, reportedCause);
-        return factory.getErrorReporter().runtimeError(this, message, sourceName, line, lineSource, lineOffset, reportedCause);
+        return new ScriptException(message, reportedCause, sourceName, line, lineOffset);
     }
 
     private String extractLineSource(Source source, int line) {

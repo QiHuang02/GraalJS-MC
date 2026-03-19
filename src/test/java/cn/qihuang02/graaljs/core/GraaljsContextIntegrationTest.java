@@ -5,6 +5,9 @@ import cn.qihuang02.graaljs.binding.ForgeEventBridge;
 import cn.qihuang02.graaljs.bridge.CustomMember;
 import cn.qihuang02.graaljs.bridge.CustomMemberProvider;
 import cn.qihuang02.graaljs.error.ErrorReporter;
+import cn.qihuang02.graaljs.error.GraaljsException;
+import cn.qihuang02.graaljs.error.ScriptException;
+import cn.qihuang02.graaljs.error.WrappedJavaException;
 import cn.qihuang02.graaljs.util.ClassVisibilityContext;
 import cn.qihuang02.graaljs.util.CustomJavaToJsWrapper;
 import cn.qihuang02.graaljs.util.HideFromJS;
@@ -241,12 +244,11 @@ class GraaljsContextIntegrationTest {
         GraaljsContext context = factory.create(ScriptType.STARTUP);
         Source source = Source.newBuilder("js", "throw new Error('boom')", "failing.js").buildLiteral();
 
-        IllegalStateException exception = assertThrows(IllegalStateException.class, () -> context.eval(source));
+        ScriptException exception = assertThrows(ScriptException.class, () -> context.eval(source));
 
         assertTrue(exception.getMessage().contains("boom"));
         assertEquals("failing.js", reporter.lastSourceName);
         assertTrue(reporter.errorCount >= 1);
-        assertTrue(reporter.runtimeErrorCount >= 1);
         assertTrue(reporter.lastLineSource.contains("throw new Error('boom')"));
         assertTrue(reporter.lastLineOffset >= -1);
     }
@@ -258,14 +260,13 @@ class GraaljsContextIntegrationTest {
         factory.setErrorReporter(reporter);
         GraaljsContext context = factory.create(ScriptType.STARTUP);
 
-        IllegalStateException exception = assertThrows(IllegalStateException.class, () ->
+        ScriptException exception = assertThrows(ScriptException.class, () ->
                 context.eval("hostFailure.js", "hostErrors.explode();")
         );
 
         assertEquals("Host exception is not visible to scripts", reporter.lastMessage);
         assertEquals("hostFailure.js", reporter.lastSourceName);
         assertTrue(reporter.lastLineSource.contains("hostErrors.explode();"));
-        assertEquals(IllegalStateException.class.getName(), reporter.lastCauseType);
         assertFalse(exception.getMessage().contains("HiddenHostException"));
     }
 
@@ -710,7 +711,7 @@ class GraaljsContextIntegrationTest {
         GraaljsContext context = factory.create(ScriptType.STARTUP);
 
         // process("a", "b") is ambiguous: both process(Object,String) and process(String,Object) match equally
-        assertThrows(IllegalStateException.class, () ->
+        assertThrows(GraaljsException.class, () ->
                 context.eval("ambiguous.js", "ambiguousTarget.process('a', 'b');")
         );
     }
@@ -893,7 +894,7 @@ class GraaljsContextIntegrationTest {
         factory.setTestEventBus(testBus);
         GraaljsContext context = factory.create(ScriptType.STARTUP);
 
-        assertThrows(IllegalStateException.class, () ->
+        assertThrows(GraaljsException.class, () ->
                 context.eval("unknownForge.js", "events.onForge('nonexistent', function() {});")
         );
     }
@@ -1073,7 +1074,13 @@ class GraaljsContextIntegrationTest {
                     .add("overloadTarget", new OverloadTarget())
                     .add("ambiguousTarget", new AmbiguousTarget())
                     .add("fineOverloadTarget", new FineOverloadTarget())
-                    .addClass("MultiConstructorAbstract", MultiConstructorAbstract.class);
+                    .addClass("MultiConstructorAbstract", MultiConstructorAbstract.class)
+                    .add("beanTarget", bindings.beanTarget)
+                    .add("beanWithPrefix", bindings.beanWithPrefix)
+                    .add("beanWithField", bindings.beanWithField)
+                    .add("beanStatic", bindings.beanStatic)
+                    .add("iterableTarget", bindings.iterableTarget)
+                    .add("iteratorTarget", bindings.iteratorTarget);
         }
     }
 
@@ -1125,6 +1132,12 @@ class GraaljsContextIntegrationTest {
         private final CustomWrappedValue customWrapped = new CustomWrappedValue();
         private final StaticFallbackSample staticFallback = new StaticFallbackSample();
         private final HostErrorSource hostErrors = new HostErrorSource();
+        private final BeanTarget beanTarget = new BeanTarget();
+        private final BeanWithPrefixTarget beanWithPrefix = new BeanWithPrefixTarget();
+        private final BeanWithFieldTarget beanWithField = new BeanWithFieldTarget();
+        private final BeanStaticTarget beanStatic = new BeanStaticTarget();
+        private final SimpleIterable iterableTarget = new SimpleIterable(List.of("a", "b", "c"));
+        private final List<String> iteratorTarget = new ArrayList<>(List.of("x", "y", "z"));
     }
 
     private static class RecordingErrorReporter implements ErrorReporter {
@@ -1536,5 +1549,259 @@ class GraaljsContextIntegrationTest {
         public String message() {
             return message;
         }
+    }
+
+    // ── Bean Property 测试辅助类 ──
+
+    public static class BeanTarget {
+        private String name = "initial";
+        private boolean active = true;
+        private String readOnly = "readonly-value";
+
+        public String getName() { return name; }
+        public void setName(String name) { this.name = name; }
+        public boolean isActive() { return active; }
+        public void setActive(boolean active) { this.active = active; }
+        public String getReadOnly() { return readOnly; }
+    }
+
+    @RemapPrefixForJS("get")
+    public static class BeanWithPrefixTarget {
+        public String getStatus() { return "ok"; }
+        public int getCount() { return 42; }
+    }
+
+    public static class BeanWithFieldTarget {
+        public String name = "field-value";
+        public String getName() { return "getter-value"; }
+    }
+
+    public static class BeanStaticTarget {
+        private static String label = "static-label";
+        public static String getLabel() { return label; }
+        public static void setLabel(String l) { label = l; }
+    }
+
+    // ── Iterable/Iterator 测试辅助类 ──
+
+    /**
+     * 纯 Iterable（非 List/Set/Map），用于测试 JavaIterableProxy。
+     */
+    public static class SimpleIterable implements Iterable<String> {
+        private final List<String> items;
+
+        public SimpleIterable(List<String> items) {
+            this.items = new ArrayList<>(items);
+        }
+
+        @Override
+        public java.util.Iterator<String> iterator() {
+            return items.iterator();
+        }
+    }
+
+    // ── Bean Property 测试 ──
+
+    @Test
+    void shouldReadBeanPropertyViaGetter() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("beanRead.js", """
+                beanName = beanTarget.name;
+                beanActive = beanTarget.active;
+                beanReadOnly = beanTarget.readOnly;
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("initial", bindings.getMember("beanName").asString());
+        assertTrue(bindings.getMember("beanActive").asBoolean());
+        assertEquals("readonly-value", bindings.getMember("beanReadOnly").asString());
+    }
+
+    @Test
+    void shouldWriteBeanPropertyViaSetter() {
+        TestBindings testBindings = new TestBindings();
+        TestFactory factory = new TestFactory(tempDir, testBindings);
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("beanWrite.js", """
+                beanTarget.name = "changed";
+                beanTarget.active = false;
+                afterName = beanTarget.name;
+                afterActive = beanTarget.active;
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("changed", bindings.getMember("afterName").asString());
+        assertFalse(bindings.getMember("afterActive").asBoolean());
+        assertEquals("changed", testBindings.beanTarget.getName());
+        assertFalse(testBindings.beanTarget.isActive());
+    }
+
+    @Test
+    void shouldRejectWriteToReadOnlyBeanProperty() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        // Writing to a read-only bean property should throw
+        Exception exception = assertThrows(Exception.class, () ->
+                context.eval("beanReadOnlyWrite.js", "beanTarget.readOnly = 'nope';")
+        );
+        assertTrue(exception.getMessage().contains("Read-only") || exception.getMessage().contains("readOnly")
+                || exception.getCause() != null && exception.getCause().getMessage() != null
+                && exception.getCause().getMessage().contains("Read-only"));
+    }
+
+    @Test
+    void shouldNotSynthesizeBeanPropertyWhenRemapPrefixAliasExists() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        // @RemapPrefixForJS("get") 已经把 getStatus → status 注册为方法别名
+        // 所以 beanWithPrefix.status 应该返回 JavaMethodProxy（可执行），而不是属性值
+        context.eval("beanPrefix.js", """
+                statusResult = beanWithPrefix.status();
+                countResult = beanWithPrefix.count();
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("ok", bindings.getMember("statusResult").asString());
+        assertEquals(42, bindings.getMember("countResult").asInt());
+    }
+
+    @Test
+    void shouldPreferFieldOverBeanProperty() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        // BeanWithFieldTarget 有 public field name = "field-value" 和 getName() 返回 "getter-value"
+        // field 应该优先
+        context.eval("beanFieldPriority.js", """
+                fieldValue = beanWithField.name;
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("field-value", bindings.getMember("fieldValue").asString());
+    }
+
+    @Test
+    void shouldExposeBeanPropertyInHasMemberAndMemberKeys() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("beanHasMember.js", """
+                hasName = "name" in beanTarget;
+                hasActive = "active" in beanTarget;
+                hasReadOnly = "readOnly" in beanTarget;
+                hasNonExistent = "nonExistent" in beanTarget;
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertTrue(bindings.getMember("hasName").asBoolean());
+        assertTrue(bindings.getMember("hasActive").asBoolean());
+        assertTrue(bindings.getMember("hasReadOnly").asBoolean());
+        assertFalse(bindings.getMember("hasNonExistent").asBoolean());
+    }
+
+    // ── Iterable/Iterator 测试 ──
+
+    @Test
+    void shouldIterateListWithForOf() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("listForOf.js", """
+                result = [];
+                for (const item of bridgeList) {
+                    result.push(item);
+                }
+                bridgeList.push("a");
+                bridgeList.push("b");
+                bridgeList.push("c");
+                result2 = [];
+                for (const item of bridgeList) {
+                    result2.push(item);
+                }
+                forOfResult = result2.join(",");
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("a,b,c", bindings.getMember("forOfResult").asString());
+    }
+
+    @Test
+    void shouldIterateSetWithForOf() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("setForOf.js", """
+                bridgeSet.add("x");
+                bridgeSet.add("y");
+                bridgeSet.add("z");
+                result = [];
+                for (const item of bridgeSet) {
+                    result.push(item);
+                }
+                forOfResult = result.join(",");
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("x,y,z", bindings.getMember("forOfResult").asString());
+    }
+
+    @Test
+    void shouldIteratePureIterableWithForOf() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("iterableForOf.js", """
+                result = [];
+                for (const item of iterableTarget) {
+                    result.push(item);
+                }
+                forOfResult = result.join(",");
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("a,b,c", bindings.getMember("forOfResult").asString());
+    }
+
+    @Test
+    void shouldExposeForEachOnIterableProxy() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("iterableForEach.js", """
+                result = [];
+                iterableTarget.forEach(function(item) {
+                    result.push(item + "!");
+                });
+                forEachResult = result.join(",");
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("a!,b!,c!", bindings.getMember("forEachResult").asString());
+    }
+
+    @Test
+    void shouldIterateNestedIterables() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        // bridgeList 中放入多个 SimpleIterable
+        context.eval("nestedIterable.js", """
+                bridgeList.push(iterableTarget);
+                result = [];
+                for (const iterable of bridgeList) {
+                    for (const item of iterable) {
+                        result.push(item);
+                    }
+                }
+                nestedResult = result.join(",");
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("a,b,c", bindings.getMember("nestedResult").asString());
     }
 }

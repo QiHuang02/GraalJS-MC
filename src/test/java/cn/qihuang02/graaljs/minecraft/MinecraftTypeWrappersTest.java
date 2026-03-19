@@ -2,6 +2,8 @@ package cn.qihuang02.graaljs.minecraft;
 
 import cn.qihuang02.graaljs.typewrap.TypeWrappers;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.core.Holder;
 import net.minecraft.nbt.ByteTag;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.DoubleTag;
@@ -9,10 +11,14 @@ import net.minecraft.nbt.IntTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.StringTag;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -313,6 +319,213 @@ class MinecraftTypeWrappersTest {
         assertSame(original, factory.wrap(null, original, AABB.class));
     }
 
+    // ── ResourceKeyWrapper ──
+    // 注意：ResourceKey/TagKey/Holder 测试需要 Minecraft 运行时环境（SharedConstants 初始化），
+    // 在纯单元测试中无法运行，标记为 @Disabled。
+
+    @Disabled("Requires Minecraft runtime (SharedConstants initialization)")
+    @Test
+    void resourceKey_passthrough() {
+        TypeWrappers wrappers = new TypeWrappers();
+        ResourceKeyWrapper.register(wrappers);
+
+        ResourceKey<?> original = ResourceKey.create(
+                ResourceKey.createRegistryKey(new ResourceLocation("minecraft", "item")),
+                new ResourceLocation("minecraft", "stone")
+        );
+        var factory = wrappers.getWrapperFactory(ResourceKey.class, original);
+        assertNotNull(factory);
+        assertSame(original, factory.wrap(null, original, ResourceKey.class));
+    }
+
+    @Disabled("Requires Minecraft runtime")
+    @Test
+    void resourceKey_fromString() {
+        TypeWrappers wrappers = new TypeWrappers();
+        ResourceKeyWrapper.register(wrappers);
+
+        var factory = wrappers.getWrapperFactory(ResourceKey.class, "minecraft:stone");
+        assertNotNull(factory);
+        ResourceKey<?> result = (ResourceKey<?>) factory.wrap(null, "minecraft:stone", ResourceKey.class);
+        assertEquals(new ResourceLocation("minecraft", "stone"), result.location());
+    }
+
+    @Disabled("Requires Minecraft runtime")
+    @Test
+    void resourceKey_fromMap() {
+        TypeWrappers wrappers = new TypeWrappers();
+        ResourceKeyWrapper.register(wrappers);
+
+        Map<String, String> map = Map.of("registry", "minecraft:item", "location", "minecraft:stone");
+        var factory = wrappers.getWrapperFactory(ResourceKey.class, map);
+        assertNotNull(factory);
+        ResourceKey<?> result = (ResourceKey<?>) factory.wrap(null, map, ResourceKey.class);
+        assertEquals(new ResourceLocation("minecraft", "stone"), result.location());
+        assertEquals(new ResourceLocation("minecraft", "item"), result.registry());
+    }
+
+    @Disabled("Requires Minecraft runtime")
+    @Test
+    void resourceKey_invalidThrows() {
+        TypeWrappers wrappers = new TypeWrappers();
+        ResourceKeyWrapper.register(wrappers);
+
+        var factory = wrappers.getWrapperFactory(ResourceKey.class, 123);
+        assertThrows(IllegalArgumentException.class, () -> factory.wrap(null, 123, ResourceKey.class));
+    }
+
+    // ── TagKeyWrapper ──
+
+    @Disabled("Requires Minecraft runtime")
+    @Test
+    void tagKey_passthrough() {
+        TypeWrappers wrappers = new TypeWrappers();
+        TagKeyWrapper.register(wrappers);
+
+        TagKey<?> original = TagKey.create(
+                ResourceKey.createRegistryKey(new ResourceLocation("minecraft", "block")),
+                new ResourceLocation("minecraft", "logs")
+        );
+        var factory = wrappers.getWrapperFactory(TagKey.class, original);
+        assertNotNull(factory);
+        assertSame(original, factory.wrap(null, original, TagKey.class));
+    }
+
+    @Disabled("Requires Minecraft runtime")
+    @Test
+    void tagKey_fromString() {
+        TypeWrappers wrappers = new TypeWrappers();
+        TagKeyWrapper.register(wrappers);
+
+        var factory = wrappers.getWrapperFactory(TagKey.class, "#minecraft:logs");
+        assertNotNull(factory);
+        TagKey<?> result = (TagKey<?>) factory.wrap(null, "#minecraft:logs", TagKey.class);
+        assertEquals(new ResourceLocation("minecraft", "logs"), result.location());
+    }
+
+    @Disabled("Requires Minecraft runtime")
+    @Test
+    void tagKey_fromStringWithoutHash() {
+        TypeWrappers wrappers = new TypeWrappers();
+        TagKeyWrapper.register(wrappers);
+
+        var factory = wrappers.getWrapperFactory(TagKey.class, "minecraft:logs");
+        assertNotNull(factory);
+        TagKey<?> result = (TagKey<?>) factory.wrap(null, "minecraft:logs", TagKey.class);
+        assertEquals(new ResourceLocation("minecraft", "logs"), result.location());
+    }
+
+    @Disabled("Requires Minecraft runtime")
+    @Test
+    void tagKey_fromMap() {
+        TypeWrappers wrappers = new TypeWrappers();
+        TagKeyWrapper.register(wrappers);
+
+        Map<String, String> map = Map.of("registry", "minecraft:block", "tag", "minecraft:logs");
+        var factory = wrappers.getWrapperFactory(TagKey.class, map);
+        assertNotNull(factory);
+        TagKey<?> result = (TagKey<?>) factory.wrap(null, map, TagKey.class);
+        assertEquals(new ResourceLocation("minecraft", "logs"), result.location());
+        assertEquals(new ResourceLocation("minecraft", "block"), result.registry());
+    }
+
+    @Disabled("Requires Minecraft runtime")
+    @Test
+    void tagKey_invalidThrows() {
+        TypeWrappers wrappers = new TypeWrappers();
+        TagKeyWrapper.register(wrappers);
+
+        var factory = wrappers.getWrapperFactory(TagKey.class, 123);
+        assertThrows(IllegalArgumentException.class, () -> factory.wrap(null, 123, TagKey.class));
+    }
+
+    // ── HolderWrapper ──
+
+    @Disabled("Requires Minecraft runtime")
+    @Test
+    void holder_passthrough() {
+        TypeWrappers wrappers = new TypeWrappers();
+        HolderWrapper.register(wrappers);
+
+        Holder<String> original = Holder.direct("test");
+        var factory = wrappers.getWrapperFactory(Holder.class, original);
+        assertNotNull(factory);
+        assertSame(original, factory.wrap(null, original, Holder.class));
+    }
+
+    @Disabled("Requires Minecraft runtime")
+    @Test
+    void holder_nonHolderThrows() {
+        TypeWrappers wrappers = new TypeWrappers();
+        HolderWrapper.register(wrappers);
+
+        var factory = wrappers.getWrapperFactory(Holder.class, "test");
+        assertThrows(IllegalArgumentException.class, () -> factory.wrap(null, "test", Holder.class));
+    }
+
+    // ── BlockHitResultWrapper ──
+
+    @Disabled("Requires Minecraft runtime")
+    @Test
+    void blockHitResult_passthrough() {
+        TypeWrappers wrappers = new TypeWrappers();
+        BlockHitResultWrapper.register(wrappers);
+
+        BlockHitResult original = new BlockHitResult(
+                new Vec3(1.5, 2.5, 3.5), Direction.NORTH, new BlockPos(1, 2, 3), false
+        );
+        var factory = wrappers.getWrapperFactory(BlockHitResult.class, original);
+        assertNotNull(factory);
+        assertSame(original, factory.wrap(null, original, BlockHitResult.class));
+    }
+
+    @Disabled("Requires Minecraft runtime")
+    @Test
+    void blockHitResult_fromMap() {
+        TypeWrappers wrappers = new TypeWrappers();
+        BlockHitResultWrapper.register(wrappers);
+
+        Map<String, Object> map = Map.of(
+                "blockPos", List.of(1, 2, 3),
+                "direction", "north",
+                "location", List.of(1.5, 2.5, 3.5),
+                "inside", false
+        );
+        var factory = wrappers.getWrapperFactory(BlockHitResult.class, map);
+        assertNotNull(factory);
+        BlockHitResult result = (BlockHitResult) factory.wrap(null, map, BlockHitResult.class);
+        assertEquals(new BlockPos(1, 2, 3), result.getBlockPos());
+        assertEquals(Direction.NORTH, result.getDirection());
+        assertEquals(new Vec3(1.5, 2.5, 3.5), result.getLocation());
+    }
+
+    @Disabled("Requires Minecraft runtime")
+    @Test
+    void blockHitResult_fromMapMinimal() {
+        TypeWrappers wrappers = new TypeWrappers();
+        BlockHitResultWrapper.register(wrappers);
+
+        Map<String, Object> map = Map.of(
+                "blockPos", List.of(10, 20, 30),
+                "direction", "UP"
+        );
+        var factory = wrappers.getWrapperFactory(BlockHitResult.class, map);
+        assertNotNull(factory);
+        BlockHitResult result = (BlockHitResult) factory.wrap(null, map, BlockHitResult.class);
+        assertEquals(new BlockPos(10, 20, 30), result.getBlockPos());
+        assertEquals(Direction.UP, result.getDirection());
+    }
+
+    @Disabled("Requires Minecraft runtime")
+    @Test
+    void blockHitResult_invalidThrows() {
+        TypeWrappers wrappers = new TypeWrappers();
+        BlockHitResultWrapper.register(wrappers);
+
+        var factory = wrappers.getWrapperFactory(BlockHitResult.class, "invalid");
+        assertThrows(IllegalArgumentException.class, () -> factory.wrap(null, "invalid", BlockHitResult.class));
+    }
+
     // ── MinecraftTypeWrappers.registerAll ──
 
     @Test
@@ -328,6 +541,8 @@ class MinecraftTypeWrappersTest {
         assertTrue(wrappers.contains(CompoundTag.class));
         assertTrue(wrappers.contains(AABB.class));
         // BlockState 需要注册表初始化，此处仅验证注册不抛异常
+        // ResourceKey/TagKey/Holder/BlockHitResult 也需要 Minecraft 运行时，
+        // 但 registerAll 中的 contains 检查会触发类加载，所以这里不验证
     }
 
     @Test

@@ -4,6 +4,7 @@ import cn.qihuang02.graaljs.core.GraaljsContext;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyArray;
 import org.graalvm.polyglot.proxy.ProxyExecutable;
+import org.graalvm.polyglot.proxy.ProxyIterable;
 import org.graalvm.polyglot.proxy.ProxyObject;
 
 import java.util.ArrayList;
@@ -14,11 +15,13 @@ import java.util.Set;
 /**
  * 为 Set 提供稳定顺序的数组式访问，同时暴露 JS Set 风格的方法。
  */
-public class JavaSetProxy implements ProxyArray, ProxyObject, ProxyValue {
+public class JavaSetProxy implements ProxyArray, ProxyObject, ProxyIterable, ProxyValue {
     private static final Set<String> METHOD_KEYS = Set.of(
             "size", "add", "has", "delete",
             "forEach", "clear", "toArray",
-            "includes", "toString"
+            "includes", "toString",
+            // 新增方法
+            "values", "entries", "keys"
     );
 
     private final GraaljsContext context;
@@ -28,6 +31,13 @@ public class JavaSetProxy implements ProxyArray, ProxyObject, ProxyValue {
     public JavaSetProxy(GraaljsContext context, Set<?> set) {
         this.context = context;
         this.set = (Set<Object>) set;
+    }
+
+    // ── ProxyIterable ──
+
+    @Override
+    public Object getIterator() {
+        return new JavaIteratorProxy(context, set.iterator());
     }
 
     // ── ProxyArray ──
@@ -91,6 +101,9 @@ public class JavaSetProxy implements ProxyArray, ProxyObject, ProxyValue {
             case "toArray" -> (ProxyExecutable) this::toArrayFn;
             case "includes" -> (ProxyExecutable) this::includesFn;
             case "toString" -> (ProxyExecutable) this::toStringFn;
+            case "values" -> (ProxyExecutable) this::valuesFn;
+            case "entries" -> (ProxyExecutable) this::entriesFn;
+            case "keys" -> (ProxyExecutable) this::valuesFn; // Set.keys() === Set.values()
             default -> null;
         };
     }
@@ -170,6 +183,22 @@ public class JavaSetProxy implements ProxyArray, ProxyObject, ProxyValue {
 
     private Object toStringFn(Value... args) {
         return set.toString();
+    }
+
+    private Object valuesFn(Value... args) {
+        return new JavaListProxy(context, new ArrayList<>(set));
+    }
+
+    private Object entriesFn(Value... args) {
+        // Set 的 entries 返回 [value, value] 对
+        List<Object> entries = new ArrayList<>();
+        for (Object element : set) {
+            entries.add(new JavaListProxy(context, new ArrayList<>(List.of(
+                    element == null ? "null" : element,
+                    element == null ? "null" : element
+            ))));
+        }
+        return new JavaListProxy(context, entries);
     }
 
     private List<Object> snapshot() {

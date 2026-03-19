@@ -5,6 +5,8 @@ import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyObject;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -54,12 +56,28 @@ abstract class AbstractReflectiveProxyObject implements ProxyObject, ProxyValue 
             }
         }
 
+        // Bean property lookup (after field, before method)
+        CachedClassInfo.BeanProperty beanProp = cachedClassInfo.findBeanProperty(key, staticOnly());
+        if (beanProp == null && allowInstanceStaticFallback()) {
+            beanProp = cachedClassInfo.findBeanProperty(key, true);
+        }
+        if (beanProp != null && beanProp.getter() != null) {
+            try {
+                Object result = beanProp.getter().invoke(target());
+                return context.javaToJs(result);
+            } catch (IllegalAccessException | InvocationTargetException exception) {
+                throw new IllegalStateException("Failed to invoke bean property getter: " + beanProp.name(), exception);
+            }
+        }
+
         List<java.lang.reflect.Method> methods = cachedClassInfo.findMethods(key, staticOnly());
         if ((methods == null || methods.isEmpty()) && allowInstanceStaticFallback()) {
             methods = cachedClassInfo.findMethods(key, true);
         }
         if (methods != null && !methods.isEmpty()) {
-            return new JavaMethodProxy(context, target(), methods);
+            JavaMethodProxy proxy = new JavaMethodProxy(context, target(), methods);
+            proxy.setOwnerProxy(this);
+            return proxy;
         }
 
         return null;
@@ -81,9 +99,11 @@ abstract class AbstractReflectiveProxyObject implements ProxyObject, ProxyValue 
         Map<String, CustomMember> customMembers = customMembers();
         return customMembers.containsKey(key)
                 || cachedClassInfo.findField(key, staticOnly()) != null
+                || cachedClassInfo.findBeanProperty(key, staticOnly()) != null
                 || cachedClassInfo.findMethods(key, staticOnly()) != null
                 || allowInstanceStaticFallback() && (
                 cachedClassInfo.findField(key, true) != null
+                        || cachedClassInfo.findBeanProperty(key, true) != null
                         || cachedClassInfo.findMethods(key, true) != null
         );
     }
@@ -103,15 +123,33 @@ abstract class AbstractReflectiveProxyObject implements ProxyObject, ProxyValue 
             field = cachedClassInfo.findField(key, true);
             fieldTarget = null;
         }
-        if (field == null) {
-            throw new UnsupportedOperationException("Unknown member: " + key);
+        if (field != null) {
+            try {
+                field.set(fieldTarget, context.jsToJava(value, field.getType()));
+            } catch (IllegalAccessException exception) {
+                throw new IllegalStateException("Failed to set field: " + field, exception);
+            }
+            return;
         }
 
-        try {
-            field.set(fieldTarget, context.jsToJava(value, field.getType()));
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException("Failed to set field: " + field, exception);
+        // Bean property setter lookup
+        CachedClassInfo.BeanProperty beanProp = cachedClassInfo.findBeanProperty(key, staticOnly());
+        if (beanProp == null && allowInstanceStaticFallback()) {
+            beanProp = cachedClassInfo.findBeanProperty(key, true);
         }
+        if (beanProp != null) {
+            if (beanProp.setter() == null) {
+                throw new IllegalStateException("Read-only property: " + key);
+            }
+            try {
+                beanProp.setter().invoke(target(), context.jsToJava(value, beanProp.setter().getParameterTypes()[0]));
+            } catch (IllegalAccessException | InvocationTargetException exception) {
+                throw new IllegalStateException("Failed to invoke bean property setter: " + beanProp.name(), exception);
+            }
+            return;
+        }
+
+        throw new UnsupportedOperationException("Unknown member: " + key);
     }
 
     @Override
@@ -139,5 +177,38 @@ abstract class AbstractReflectiveProxyObject implements ProxyObject, ProxyValue 
             customMembers = collectCustomMembers(target());
         }
         return customMembers;
+    }
+
+    // ── SpecialEquality / ToStringJS 钩子 ──
+
+    @Override
+    public boolean equals(Object obj) {
+        Object self = target();
+        if (self == null) {
+            return obj == null;
+        }
+        Object other = obj;
+        if (other instanceof ProxyValue pv) {
+            other = pv.unwrap();
+        }
+        if (self instanceof SpecialEquality se) {
+            return se.specialEquals(other);
+        }
+        return self.equals(other);
+    }
+
+    @Override
+    public int hashCode() {
+        Object self = target();
+        return self == null ? 0 : self.hashCode();
+    }
+
+    @Override
+    public String toString() {
+        Object self = target();
+        if (self instanceof ToStringJS ts) {
+            return ts.toStringJS();
+        }
+        return self == null ? "null" : self.toString();
     }
 }

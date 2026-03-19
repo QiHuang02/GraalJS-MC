@@ -1,14 +1,22 @@
 package cn.qihuang02.graaljs.typewrap;
 
 import cn.qihuang02.graaljs.core.GraaljsContext;
+import cn.qihuang02.graaljs.util.RemappedEnumConstant;
+
+import java.lang.reflect.Field;
+import java.util.HashMap;
+import java.util.Map;
 
 public class EnumTypeWrapper<T extends Enum<T>> implements TypeWrapperFactory<T> {
     private final Class<T> enumClass;
     private final T[] constants;
+    /** 重映射名称 → 枚举常量 */
+    private final Map<String, T> remappedNames;
 
     public EnumTypeWrapper(Class<T> enumClass) {
         this.enumClass = enumClass;
         this.constants = enumClass.getEnumConstants();
+        this.remappedNames = buildRemappedNames();
     }
 
     @Override
@@ -29,10 +37,21 @@ public class EnumTypeWrapper<T extends Enum<T>> implements TypeWrapperFactory<T>
                 return constant;
             }
         }
+        // 重映射名称精确匹配
+        T remapped = remappedNames.get(name);
+        if (remapped != null) {
+            return remapped;
+        }
         // 忽略大小写匹配
         for (T constant : constants) {
             if (constant.name().equalsIgnoreCase(name)) {
                 return constant;
+            }
+        }
+        // 重映射名称忽略大小写匹配
+        for (Map.Entry<String, T> entry : remappedNames.entrySet()) {
+            if (entry.getKey().equalsIgnoreCase(name)) {
+                return entry.getValue();
             }
         }
         return null;
@@ -43,5 +62,21 @@ public class EnumTypeWrapper<T extends Enum<T>> implements TypeWrapperFactory<T>
             return constants[ordinal];
         }
         return null;
+    }
+
+    private Map<String, T> buildRemappedNames() {
+        Map<String, T> map = new HashMap<>();
+        for (T constant : constants) {
+            try {
+                Field field = enumClass.getField(constant.name());
+                RemappedEnumConstant annotation = field.getAnnotation(RemappedEnumConstant.class);
+                if (annotation != null && !annotation.value().isEmpty()) {
+                    map.put(annotation.value(), constant);
+                }
+            } catch (NoSuchFieldException ignored) {
+                // 不应发生
+            }
+        }
+        return map;
     }
 }

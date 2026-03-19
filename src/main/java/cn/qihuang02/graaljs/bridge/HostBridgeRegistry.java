@@ -4,6 +4,7 @@ import cn.qihuang02.graaljs.core.GraaljsContext;
 import cn.qihuang02.graaljs.util.CustomJavaToJsWrapper;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -57,6 +58,28 @@ public class HostBridgeRegistry {
             @Override
             public Object toJs(GraaljsContext context, Object value) {
                 return new JavaSetProxy(context, (Set<?>) value);
+            }
+        });
+        addDefault(new HostBridge() {
+            @Override
+            public boolean supports(Object value) {
+                return value instanceof Iterator<?>;
+            }
+
+            @Override
+            public Object toJs(GraaljsContext context, Object value) {
+                return new JavaIteratorProxy(context, (Iterator<?>) value);
+            }
+        });
+        addDefault(new HostBridge() {
+            @Override
+            public boolean supports(Object value) {
+                return value instanceof Iterable<?>;
+            }
+
+            @Override
+            public Object toJs(GraaljsContext context, Object value) {
+                return new JavaIterableProxy(context, (Iterable<?>) value);
             }
         });
         addDefault(new HostBridge() {

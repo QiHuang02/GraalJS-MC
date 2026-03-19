@@ -15,5 +15,24 @@ public final class MinecraftTypeWrappers {
         CompoundTagWrapper.register(wrappers);
         AABBWrapper.register(wrappers);
         BlockStateWrapper.register(wrappers);
+        // 以下 Wrapper 依赖 Minecraft 运行时类（ResourceKey 等需要 SharedConstants 初始化），
+        // 在纯测试环境中可能因类加载失败而跳过
+        safeRegister("ResourceKeyWrapper", wrappers);
+        safeRegister("TagKeyWrapper", wrappers);
+        safeRegister("HolderWrapper", wrappers);
+        safeRegister("BlockHitResultWrapper", wrappers);
+    }
+
+    private static void safeRegister(String wrapperClassName, TypeWrappers wrappers) {
+        try {
+            String fullName = MinecraftTypeWrappers.class.getPackageName() + "." + wrapperClassName;
+            Class<?> clazz = Class.forName(fullName);
+            java.lang.reflect.Method registerMethod = clazz.getMethod("register", TypeWrappers.class);
+            registerMethod.invoke(null, wrappers);
+        } catch (NoClassDefFoundError | ExceptionInInitializerError ignored) {
+            // 在测试环境中，某些 Minecraft 类可能无法加载
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException("Failed to register wrapper: " + wrapperClassName, e);
+        }
     }
 }

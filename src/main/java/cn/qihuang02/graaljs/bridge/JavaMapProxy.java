@@ -19,7 +19,9 @@ public class JavaMapProxy implements ProxyObject, ProxyValue {
     private static final Set<String> METHOD_KEYS = Set.of(
             "size", "keys", "values", "entries",
             "has", "delete", "forEach", "clear",
-            "toString"
+            "toString",
+            // 新增方法
+            "get", "set"
     );
 
     private final GraaljsContext context;
@@ -43,6 +45,8 @@ public class JavaMapProxy implements ProxyObject, ProxyValue {
             case "forEach" -> (ProxyExecutable) this::forEachFn;
             case "clear" -> (ProxyExecutable) this::clearFn;
             case "toString" -> (ProxyExecutable) this::toStringFn;
+            case "get" -> (ProxyExecutable) this::getFn;
+            case "set" -> (ProxyExecutable) this::setFn;
             default -> context.javaToJs(map.get(key));
         };
     }
@@ -140,5 +144,28 @@ public class JavaMapProxy implements ProxyObject, ProxyValue {
 
     private Object toStringFn(Value... args) {
         return map.toString();
+    }
+
+    private Object getFn(Value... args) {
+        if (args.length == 0) {
+            return null;
+        }
+        Object key = context.jsToJava(args[0], Object.class);
+        Object value = map.get(key);
+        // 也尝试 String key 查找（JS 侧常用字符串 key）
+        if (value == null && !(key instanceof String)) {
+            value = map.get(String.valueOf(key));
+        }
+        return value == null ? null : context.javaToJs(value);
+    }
+
+    private Object setFn(Value... args) {
+        if (args.length < 2) {
+            throw new IllegalArgumentException("set() requires key and value arguments");
+        }
+        Object key = context.jsToJava(args[0], Object.class);
+        Object value = context.jsToJava(args[1], Object.class);
+        map.put(key, value);
+        return this; // 返回 Map 自身，符合 JS Map.set() 语义
     }
 }

@@ -4,9 +4,13 @@ import cn.qihuang02.graaljs.core.GraaljsContext;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyArray;
 import org.graalvm.polyglot.proxy.ProxyExecutable;
+import org.graalvm.polyglot.proxy.ProxyIterable;
 import org.graalvm.polyglot.proxy.ProxyObject;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -15,12 +19,16 @@ import java.util.StringJoiner;
 /**
  * 为 List 提供原生数组式访问，同时暴露 JS 风格的数组方法。
  */
-public class JavaListProxy implements ProxyArray, ProxyObject, ProxyValue {
+public class JavaListProxy implements ProxyArray, ProxyObject, ProxyIterable, ProxyValue {
     private static final Set<String> MEMBER_KEYS = Set.of(
             "length", "push", "pop", "splice",
             "forEach", "map", "filter", "find",
             "includes", "indexOf", "join", "slice",
-            "toString"
+            "toString",
+            // 新增方法
+            "reduce", "every", "some", "findIndex",
+            "sort", "reverse", "concat", "flat",
+            "fill", "entries", "keys", "values"
     );
 
     private final GraaljsContext context;
@@ -30,6 +38,13 @@ public class JavaListProxy implements ProxyArray, ProxyObject, ProxyValue {
     public JavaListProxy(GraaljsContext context, List<?> list) {
         this.context = context;
         this.list = (List<Object>) list;
+    }
+
+    // ── ProxyIterable ──
+
+    @Override
+    public Object getIterator() {
+        return new JavaIteratorProxy(context, list.iterator());
     }
 
     // ── ProxyArray ──
@@ -91,6 +106,18 @@ public class JavaListProxy implements ProxyArray, ProxyObject, ProxyValue {
             case "join" -> (ProxyExecutable) this::join;
             case "slice" -> (ProxyExecutable) this::slice;
             case "toString" -> (ProxyExecutable) this::toStringFn;
+            case "reduce" -> (ProxyExecutable) this::reduceFn;
+            case "every" -> (ProxyExecutable) this::everyFn;
+            case "some" -> (ProxyExecutable) this::someFn;
+            case "findIndex" -> (ProxyExecutable) this::findIndexFn;
+            case "sort" -> (ProxyExecutable) this::sortFn;
+            case "reverse" -> (ProxyExecutable) this::reverseFn;
+            case "concat" -> (ProxyExecutable) this::concatFn;
+            case "flat" -> (ProxyExecutable) this::flatFn;
+            case "fill" -> (ProxyExecutable) this::fillFn;
+            case "entries" -> (ProxyExecutable) this::entriesFn;
+            case "keys" -> (ProxyExecutable) this::keysFn;
+            case "values" -> (ProxyExecutable) this::valuesFn;
             default -> null;
         };
     }
@@ -236,6 +263,161 @@ public class JavaListProxy implements ProxyArray, ProxyObject, ProxyValue {
 
     private Object toStringFn(Value... args) {
         return join();
+    }
+
+    // ── 新增 JS 方法 ──
+
+    private Object reduceFn(Value... args) {
+        requireCallback(args);
+        Value callback = args[0];
+        int startIndex;
+        Object accumulator;
+        if (args.length > 1) {
+            accumulator = context.jsToJava(args[1], Object.class);
+            startIndex = 0;
+        } else {
+            if (list.isEmpty()) {
+                throw new IllegalStateException("Reduce of empty array with no initial value");
+            }
+            accumulator = list.get(0);
+            startIndex = 1;
+        }
+        for (int i = startIndex; i < list.size(); i++) {
+            Value result = callback.execute(
+                    context.javaToJs(accumulator),
+                    context.javaToJs(list.get(i)),
+                    i,
+                    this
+            );
+            accumulator = context.jsToJava(result, Object.class);
+        }
+        return context.javaToJs(accumulator);
+    }
+
+    private Object everyFn(Value... args) {
+        requireCallback(args);
+        Value callback = args[0];
+        for (int i = 0; i < list.size(); i++) {
+            Value result = callback.execute(context.javaToJs(list.get(i)), i, this);
+            if (!result.asBoolean()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private Object someFn(Value... args) {
+        requireCallback(args);
+        Value callback = args[0];
+        for (int i = 0; i < list.size(); i++) {
+            Value result = callback.execute(context.javaToJs(list.get(i)), i, this);
+            if (result.asBoolean()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Object findIndexFn(Value... args) {
+        requireCallback(args);
+        Value callback = args[0];
+        for (int i = 0; i < list.size(); i++) {
+            Value result = callback.execute(context.javaToJs(list.get(i)), i, this);
+            if (result.asBoolean()) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Object sortFn(Value... args) {
+        if (args.length > 0 && args[0].canExecute()) {
+            Value comparator = args[0];
+            list.sort((a, b) -> {
+                Value result = comparator.execute(context.javaToJs(a), context.javaToJs(b));
+                return result.asInt();
+            });
+        } else {
+            list.sort((a, b) -> {
+                String sa = a == null ? "null" : String.valueOf(a);
+                String sb = b == null ? "null" : String.valueOf(b);
+                return sa.compareTo(sb);
+            });
+        }
+        return this;
+    }
+
+    private Object reverseFn(Value... args) {
+        Collections.reverse(list);
+        return this;
+    }
+
+    private Object concatFn(Value... args) {
+        List<Object> result = new ArrayList<>(list);
+        for (Value arg : args) {
+            if (arg.hasArrayElements()) {
+                long size = arg.getArraySize();
+                for (long i = 0; i < size; i++) {
+                    result.add(context.jsToJava(arg.getArrayElement(i), Object.class));
+                }
+            } else {
+                result.add(context.jsToJava(arg, Object.class));
+            }
+        }
+        return new JavaListProxy(context, result);
+    }
+
+    private Object flatFn(Value... args) {
+        int depth = args.length > 0 ? args[0].asInt() : 1;
+        List<Object> result = new ArrayList<>();
+        flattenInto(result, list, depth);
+        return new JavaListProxy(context, result);
+    }
+
+    private void flattenInto(List<Object> result, List<?> source, int depth) {
+        for (Object element : source) {
+            if (depth > 0 && element instanceof List<?> nested) {
+                flattenInto(result, nested, depth - 1);
+            } else {
+                result.add(element);
+            }
+        }
+    }
+
+    private Object fillFn(Value... args) {
+        if (args.length == 0) {
+            return this;
+        }
+        Object value = context.jsToJava(args[0], Object.class);
+        int start = args.length > 1 ? normalizeIndex(args[1].asInt()) : 0;
+        int end = args.length > 2 ? normalizeIndex(args[2].asInt()) : list.size();
+        start = Math.max(0, Math.min(start, list.size()));
+        end = Math.max(start, Math.min(end, list.size()));
+        for (int i = start; i < end; i++) {
+            list.set(i, value);
+        }
+        return this;
+    }
+
+    private Object entriesFn(Value... args) {
+        List<Object> entries = new ArrayList<>(list.size());
+        for (int i = 0; i < list.size(); i++) {
+            entries.add(new JavaListProxy(context, new ArrayList<>(List.of(i, list.get(i)))));
+        }
+        return new JavaListProxy(context, entries);
+    }
+
+    private Object keysFn(Value... args) {
+        List<Object> keys = new ArrayList<>(list.size());
+        for (int i = 0; i < list.size(); i++) {
+            keys.add(i);
+        }
+        return new JavaListProxy(context, keys);
+    }
+
+    private Object valuesFn(Value... args) {
+        return new JavaListProxy(context, new ArrayList<>(list));
     }
 
     // ── 工具方法 ──
