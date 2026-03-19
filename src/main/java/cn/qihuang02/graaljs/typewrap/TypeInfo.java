@@ -1,12 +1,13 @@
 package cn.qihuang02.graaljs.typewrap;
 
 import java.lang.reflect.GenericArrayType;
+import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
 import java.lang.reflect.WildcardType;
 import java.util.Arrays;
 import java.util.StringJoiner;
-import java.util.stream.Collectors;
 
 /**
  * 密封接口，统一描述 Java 类型在桥接层的语义。
@@ -28,6 +29,47 @@ public sealed interface TypeInfo
 
     /** 用于错误信息的可读类型描述 */
     String describe();
+
+    // ── 默认查询方法 ──
+
+    /** 是否需要类型转换（非 Object 类型） */
+    default boolean shouldConvert() {
+        return rawType() != Object.class;
+    }
+
+    /** 是否为函数式接口 */
+    default boolean isFunctionalInterface() {
+        return this instanceof FunctionalInterfaceTypeInfo;
+    }
+
+    /** 获取 Record 组件信息，非 Record 类型返回空数组 */
+    default RecordComponent[] recordComponents() {
+        if (this instanceof RecordTypeInfo) {
+            RecordComponent[] components = rawType().getRecordComponents();
+            return components != null ? components : new RecordComponent[0];
+        }
+        return new RecordComponent[0];
+    }
+
+    /** 获取枚举常量，非枚举类型返回空数组 */
+    default Object[] enumConstants() {
+        if (this instanceof EnumTypeInfo) {
+            Object[] constants = rawType().getEnumConstants();
+            return constants != null ? constants : new Object[0];
+        }
+        return new Object[0];
+    }
+
+    /** 使用 TypeConsolidator 解析泛型类型变量 */
+    default TypeInfo consolidate(Class<?> contextClass) {
+        // 基础实现不做额外处理，ParameterizedTypeInfo 可覆盖
+        return this;
+    }
+
+    /** 创建此类型的数组 */
+    default Object newArray(int length) {
+        return java.lang.reflect.Array.newInstance(rawType(), length);
+    }
 
     // ── 工厂方法 ──
 
@@ -77,18 +119,25 @@ public sealed interface TypeInfo
         if (clazz.isRecord()) {
             return new RecordTypeInfo(clazz);
         }
-        if (isFunctionalInterface(clazz)) {
+        if (checkFunctionalInterface(clazz)) {
             return new FunctionalInterfaceTypeInfo(clazz);
         }
         return new ClassTypeInfo(clazz);
     }
 
-    private static boolean isFunctionalInterface(Class<?> clazz) {
+    /**
+     * 从 Type 构建 TypeInfo，使用 TypeConsolidator 解析类型变量。
+     */
+    static TypeInfo of(Type type, TypeConsolidator consolidator) {
+        Type resolved = consolidator.resolve(type);
+        return of(resolved);
+    }
+
+    private static boolean checkFunctionalInterface(Class<?> clazz) {
         if (!clazz.isInterface()) return false;
         if (clazz.isAnnotationPresent(FunctionalInterface.class)) return true;
-        // 检查是否只有一个抽象方法
         long abstractCount = Arrays.stream(clazz.getMethods())
-                .filter(m -> java.lang.reflect.Modifier.isAbstract(m.getModifiers()))
+                .filter(m -> Modifier.isAbstract(m.getModifiers()))
                 .count();
         return abstractCount == 1;
     }
@@ -188,7 +237,7 @@ public sealed interface TypeInfo
 
         /** 获取 Record 组件名 */
         public String[] componentNames() {
-            java.lang.reflect.RecordComponent[] components = rawType.getRecordComponents();
+            RecordComponent[] components = rawType.getRecordComponents();
             if (components == null) return new String[0];
             String[] names = new String[components.length];
             for (int i = 0; i < components.length; i++) {

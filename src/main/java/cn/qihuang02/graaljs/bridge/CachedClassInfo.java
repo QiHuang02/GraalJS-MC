@@ -95,6 +95,37 @@ public final class CachedClassInfo {
         return List.copyOf(constructors);
     }
 
+    /**
+     * 返回此类型的调试信息摘要。
+     */
+    public List<String> getDebugInfo() {
+        List<String> info = new ArrayList<>();
+        info.add("type: " + type.getName());
+        if (hidden) {
+            info.add("hidden: true");
+            return info;
+        }
+        if (!instanceFields.isEmpty()) {
+            info.add("fields: " + String.join(", ", instanceFields.keySet()));
+        }
+        if (!staticFields.isEmpty()) {
+            info.add("staticFields: " + String.join(", ", staticFields.keySet()));
+        }
+        if (!instanceMethods.isEmpty()) {
+            info.add("methods: " + String.join(", ", instanceMethods.keySet()));
+        }
+        if (!staticMethods.isEmpty()) {
+            info.add("staticMethods: " + String.join(", ", staticMethods.keySet()));
+        }
+        if (!instanceBeanProperties.isEmpty()) {
+            info.add("beanProperties: " + String.join(", ", instanceBeanProperties.keySet()));
+        }
+        if (!constructors.isEmpty()) {
+            info.add("constructors: " + constructors.size());
+        }
+        return info;
+    }
+
     private void collectFields(Field[] fields) {
         for (Field field : fields) {
             if (!include(field) || isHidden(field) || !storage.visibleToScripts(field.getType(), ClassVisibilityContext.MEMBER)) {

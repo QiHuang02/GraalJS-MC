@@ -1,7 +1,7 @@
 package cn.qihuang02.graaljs.typewrap;
 
 import cn.qihuang02.graaljs.core.GraaljsContext;
-import cn.qihuang02.graaljs.util.RemappedEnumConstant;
+import cn.qihuang02.graaljs.bridge.RemappedEnumConstant;
 
 import java.lang.reflect.Field;
 import java.util.HashMap;
@@ -67,9 +67,19 @@ public class EnumTypeWrapper<T extends Enum<T>> implements TypeWrapperFactory<T>
     private Map<String, T> buildRemappedNames() {
         Map<String, T> map = new HashMap<>();
         for (T constant : constants) {
+            // 优先检查接口形式（Rhino 兼容）
+            if (constant instanceof RemappedEnumConstant remapped) {
+                String name = remapped.getRemappedEnumConstantName();
+                if (name != null && !name.isEmpty()) {
+                    map.put(name, constant);
+                    continue;
+                }
+            }
+            // 其次检查注解形式
             try {
                 Field field = enumClass.getField(constant.name());
-                RemappedEnumConstant annotation = field.getAnnotation(RemappedEnumConstant.class);
+                cn.qihuang02.graaljs.util.RemappedEnumConstant annotation =
+                        field.getAnnotation(cn.qihuang02.graaljs.util.RemappedEnumConstant.class);
                 if (annotation != null && !annotation.value().isEmpty()) {
                     map.put(annotation.value(), constant);
                 }

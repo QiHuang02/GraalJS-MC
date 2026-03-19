@@ -25,10 +25,11 @@ public class JavaListProxy implements ProxyArray, ProxyObject, ProxyIterable, Pr
             "forEach", "map", "filter", "find",
             "includes", "indexOf", "join", "slice",
             "toString",
-            // 新增方法
             "reduce", "every", "some", "findIndex",
             "sort", "reverse", "concat", "flat",
-            "fill", "entries", "keys", "values"
+            "fill", "entries", "keys", "values",
+            // Rhino 兼容方法
+            "shift", "unshift", "reduceRight", "findLast", "findLastIndex"
     );
 
     private final GraaljsContext context;
@@ -79,7 +80,8 @@ public class JavaListProxy implements ProxyArray, ProxyObject, ProxyIterable, Pr
         if (index < 0 || index >= list.size()) {
             return false;
         }
-        list.remove((int) index);
+        Object removed = list.remove((int) index);
+        Deletable.deleteObject(removed);
         return true;
     }
 
@@ -118,6 +120,11 @@ public class JavaListProxy implements ProxyArray, ProxyObject, ProxyIterable, Pr
             case "entries" -> (ProxyExecutable) this::entriesFn;
             case "keys" -> (ProxyExecutable) this::keysFn;
             case "values" -> (ProxyExecutable) this::valuesFn;
+            case "shift" -> (ProxyExecutable) this::shiftFn;
+            case "unshift" -> (ProxyExecutable) this::unshiftFn;
+            case "reduceRight" -> (ProxyExecutable) this::reduceRightFn;
+            case "findLast" -> (ProxyExecutable) this::findLastFn;
+            case "findLastIndex" -> (ProxyExecutable) this::findLastIndexFn;
             default -> null;
         };
     }
@@ -157,7 +164,9 @@ public class JavaListProxy implements ProxyArray, ProxyObject, ProxyIterable, Pr
         if (list.isEmpty()) {
             return null;
         }
-        return context.javaToJs(list.remove(list.size() - 1));
+        Object removed = list.remove(list.size() - 1);
+        Deletable.deleteObject(removed);
+        return context.javaToJs(removed);
     }
 
     private Object splice(Value... args) {
@@ -167,7 +176,9 @@ public class JavaListProxy implements ProxyArray, ProxyObject, ProxyIterable, Pr
 
         List<Object> removed = new ArrayList<>();
         for (int i = 0; i < deleteCount; i++) {
-            removed.add(list.remove(start));
+            Object element = list.remove(start);
+            Deletable.deleteObject(element);
+            removed.add(element);
         }
 
         for (int i = 2; i < args.length; i++) {
@@ -418,6 +429,74 @@ public class JavaListProxy implements ProxyArray, ProxyObject, ProxyIterable, Pr
 
     private Object valuesFn(Value... args) {
         return new JavaListProxy(context, new ArrayList<>(list));
+    }
+
+    private Object shiftFn(Value... args) {
+        if (list.isEmpty()) {
+            return null;
+        }
+        Object removed = list.remove(0);
+        Deletable.deleteObject(removed);
+        return context.javaToJs(removed);
+    }
+
+    private Object unshiftFn(Value... args) {
+        for (int i = args.length - 1; i >= 0; i--) {
+            list.add(0, context.jsToJava(args[i], Object.class));
+        }
+        return list.size();
+    }
+
+    private Object reduceRightFn(Value... args) {
+        requireCallback(args);
+        Value callback = args[0];
+        int startIndex;
+        Object accumulator;
+        if (args.length > 1) {
+            accumulator = context.jsToJava(args[1], Object.class);
+            startIndex = list.size() - 1;
+        } else {
+            if (list.isEmpty()) {
+                throw new IllegalStateException("Reduce of empty array with no initial value");
+            }
+            accumulator = list.get(list.size() - 1);
+            startIndex = list.size() - 2;
+        }
+        for (int i = startIndex; i >= 0; i--) {
+            Value result = callback.execute(
+                    context.javaToJs(accumulator),
+                    context.javaToJs(list.get(i)),
+                    i,
+                    this
+            );
+            accumulator = context.jsToJava(result, Object.class);
+        }
+        return context.javaToJs(accumulator);
+    }
+
+    private Object findLastFn(Value... args) {
+        requireCallback(args);
+        Value callback = args[0];
+        for (int i = list.size() - 1; i >= 0; i--) {
+            Object element = list.get(i);
+            Value result = callback.execute(context.javaToJs(element), i, this);
+            if (result.asBoolean()) {
+                return context.javaToJs(element);
+            }
+        }
+        return null;
+    }
+
+    private Object findLastIndexFn(Value... args) {
+        requireCallback(args);
+        Value callback = args[0];
+        for (int i = list.size() - 1; i >= 0; i--) {
+            Value result = callback.execute(context.javaToJs(list.get(i)), i, this);
+            if (result.asBoolean()) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     // ── 工具方法 ──

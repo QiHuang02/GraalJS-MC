@@ -1,10 +1,12 @@
 package cn.qihuang02.graaljs;
 
+import cn.qihuang02.graaljs.command.GraaljsCommand;
 import cn.qihuang02.graaljs.core.GraaljsContextFactory;
 import cn.qihuang02.graaljs.core.ScriptType;
 import com.mojang.logging.LogUtils;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
 import net.minecraftforge.event.server.ServerStartedEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
@@ -55,6 +57,11 @@ public class Graaljs {
         if (factory != null) {
             factory.closeAll();
         }
+    }
+
+    @SubscribeEvent
+    public void onRegisterCommands(@NotNull RegisterCommandsEvent event) {
+        GraaljsCommand.register(event.getDispatcher());
     }
 
     @SubscribeEvent

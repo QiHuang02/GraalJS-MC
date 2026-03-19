@@ -8,8 +8,10 @@ import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import net.bytebuddy.implementation.FieldAccessor;
 import net.bytebuddy.implementation.MethodDelegation;
 import net.bytebuddy.implementation.bind.annotation.AllArguments;
+import net.bytebuddy.implementation.bind.annotation.Morph;
 import net.bytebuddy.implementation.bind.annotation.Origin;
 import net.bytebuddy.implementation.bind.annotation.RuntimeType;
+import net.bytebuddy.implementation.bind.annotation.SuperCall;
 import net.bytebuddy.implementation.bind.annotation.This;
 import net.bytebuddy.matcher.ElementMatchers;
 import org.graalvm.polyglot.Value;
@@ -45,9 +47,6 @@ public final class AbstractClassAdapter {
         if (Modifier.isFinal(abstractType.getModifiers())) {
             throw new IllegalArgumentException("Cannot adapt final class: " + abstractType.getName());
         }
-        if (!Modifier.isAbstract(abstractType.getModifiers())) {
-            throw new IllegalArgumentException("Target type is not abstract: " + abstractType.getName());
-        }
         if (!context.getFactory().visibleToScripts(abstractType.getName(), ClassVisibilityContext.ADAPTER_SUPER)) {
             throw new IllegalArgumentException("Abstract class is not visible to scripts: " + abstractType.getName());
         }
@@ -77,7 +76,13 @@ public final class AbstractClassAdapter {
                     .subclass(signature.superClass(), net.bytebuddy.dynamic.scaffold.subclass.ConstructorStrategy.Default.IMITATE_SUPER_CLASS_OPENING)
                     .implement(signature.interfaces().toArray(Class<?>[]::new))
                     .defineField("__graaljsInterceptor", JsAbstractMethodInterceptor.class, Visibility.PRIVATE)
-                    .method(ElementMatchers.isAbstract())
+                    // 拦截所有可覆盖方法（抽象 + 非 final 非 static 的 public/protected）
+                    .method(ElementMatchers.isAbstract()
+                            .or(ElementMatchers.not(ElementMatchers.isFinal())
+                                    .and(ElementMatchers.not(ElementMatchers.isStatic()))
+                                    .and(ElementMatchers.not(ElementMatchers.isNative()))
+                                    .and(ElementMatchers.isPublic().or(ElementMatchers.isProtected()))
+                                    .and(ElementMatchers.not(ElementMatchers.isDeclaredBy(Object.class)))))
                     .intercept(MethodDelegation.toField("__graaljsInterceptor"))
                     .defineMethod("__graaljsSetInterceptor", void.class, Visibility.PUBLIC)
                     .withParameters(JsAbstractMethodInterceptor.class)
@@ -192,7 +197,8 @@ public final class AbstractClassAdapter {
     }
 
     /**
-     * 负责把抽象方法调用转发到 JS 对象。
+     * 负责把方法调用转发到 JS 对象。
+     * 对于非抽象方法，如果 JS 对象没有提供实现，则回退到 super 调用。
      */
     public static final class JsAbstractMethodInterceptor {
         private final GraaljsContext context;
@@ -206,20 +212,30 @@ public final class AbstractClassAdapter {
         }
 
         @RuntimeType
-        public Object intercept(@This Object self, @Origin Method method, @AllArguments Object[] args) {
+        public Object intercept(@This Object self, @Origin Method method, @AllArguments Object[] args,
+                                @SuperCall(nullIfImpossible = true) java.util.concurrent.Callable<?> superCall) throws Exception {
             Object[] safeArgs = args == null ? new Object[0] : args;
-            Object[] jsArgs = new Object[safeArgs.length];
-            for (int i = 0; i < safeArgs.length; i++) {
-                jsArgs[i] = context.javaToJs(safeArgs[i]);
-            }
-            Value member = target.hasMember(method.getName()) ? target.getMember(method.getName()) : null;
-            if (member != null && member.canExecute()) {
+            String methodName = method.getName();
+
+            // 检查 JS 对象是否提供了该方法
+            boolean jsHasMethod = target.hasMember(methodName) && target.getMember(methodName).canExecute();
+
+            if (jsHasMethod) {
+                Object[] jsArgs = new Object[safeArgs.length];
+                for (int i = 0; i < safeArgs.length; i++) {
+                    jsArgs[i] = context.javaToJs(safeArgs[i]);
+                }
+                Value member = target.getMember(methodName);
                 return context.jsToJava(member.execute(jsArgs), method.getGenericReturnType());
             }
-            if (target.canInvokeMember(method.getName())) {
-                return context.jsToJava(target.invokeMember(method.getName(), jsArgs), method.getGenericReturnType());
+
+            // JS 没有提供实现，尝试调用 super
+            if (superCall != null) {
+                return superCall.call();
             }
-            throw new IllegalStateException("JS value does not implement abstract method '" + method.getName()
+
+            // 抽象方法且 JS 没有实现
+            throw new IllegalStateException("JS value does not implement abstract method '" + methodName
                     + "' for " + signature.superClass().getName() + " with args " + Arrays.toString(safeArgs));
         }
     }

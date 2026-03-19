@@ -4,6 +4,7 @@ import cn.qihuang02.graaljs.core.GraaljsContext;
 import cn.qihuang02.graaljs.typewrap.GenericTypeInfo;
 import cn.qihuang02.graaljs.util.ClassVisibilityContext;
 import cn.qihuang02.graaljs.util.ReturnsSelf;
+import cn.qihuang02.graaljs.util.ReturnsSelfContainer;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyExecutable;
 
@@ -56,8 +57,7 @@ public class JavaMethodProxy implements ProxyExecutable {
             Object result = match.method().invoke(target, match.arguments());
             // @ReturnsSelf 优化：如果方法标注了 @ReturnsSelf 且返回值就是 target，
             // 直接返回原始代理对象避免重新包装
-            if (ownerProxy != null && result == target
-                    && match.method().isAnnotationPresent(ReturnsSelf.class)) {
+            if (ownerProxy != null && result == target && isReturnsSelf(match.method())) {
                 return ownerProxy;
             }
             return context.javaToJs(result);
@@ -183,6 +183,40 @@ public class JavaMethodProxy implements ProxyExecutable {
         public String toString() {
             return method + " " + Arrays.toString(arguments);
         }
+    }
+
+    /**
+     * 判断方法是否为 returnsSelf（方法级别或类级别 @ReturnsSelf）。
+     * 方法级别：直接标注 @ReturnsSelf 且 copy=false。
+     * 类级别：声明类标注 @ReturnsSelf，且方法返回类型匹配 value() 指定的类型，且 copy=false。
+     */
+    private static boolean isReturnsSelf(Method method) {
+        // 方法级别检查
+        ReturnsSelf methodAnnotation = method.getAnnotation(ReturnsSelf.class);
+        if (methodAnnotation != null) {
+            return !methodAnnotation.copy();
+        }
+        // 类级别检查
+        Class<?> declaringClass = method.getDeclaringClass();
+        ReturnsSelf[] classAnnotations = declaringClass.getAnnotationsByType(ReturnsSelf.class);
+        if (classAnnotations.length == 0) {
+            return false;
+        }
+        Class<?> returnType = method.getReturnType();
+        for (ReturnsSelf annotation : classAnnotations) {
+            if (annotation.copy()) {
+                continue;
+            }
+            Class<?> matchType = annotation.value();
+            // Object.class 表示使用声明类本身
+            if (matchType == Object.class) {
+                matchType = declaringClass;
+            }
+            if (matchType.isAssignableFrom(returnType)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

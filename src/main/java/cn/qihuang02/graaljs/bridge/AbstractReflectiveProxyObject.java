@@ -39,7 +39,11 @@ abstract class AbstractReflectiveProxyObject implements ProxyObject, ProxyValue 
         Map<String, CustomMember> customMembers = customMembers();
         CustomMember customMember = customMembers.get(key);
         if (customMember != null) {
-            return context.javaToJs(customMember.value());
+            Object value = customMember.value();
+            if (value instanceof CustomProperty cp) {
+                value = cp.get(context);
+            }
+            return context.javaToJs(value);
         }
 
         Field field = cachedClassInfo.findField(key, staticOnly());
@@ -157,6 +161,32 @@ abstract class AbstractReflectiveProxyObject implements ProxyObject, ProxyValue 
         return customMembers().remove(key) != null;
     }
 
+    // ── 外部注入 CustomMember ──
+
+    /**
+     * 动态注入自定义成员。允许外部代码（如 TypeWrapper）在包装后添加成员。
+     */
+    public void addCustomMember(CustomMember member) {
+        if (member != null && member.name() != null && !member.name().isBlank()) {
+            customMembers().put(member.name(), member);
+        }
+    }
+
+    /**
+     * 注入动态计算属性。
+     */
+    public void addCustomProperty(String name, Class<?> type, CustomProperty getter) {
+        addCustomMember(new CustomMember(name, type, getter));
+    }
+
+    /**
+     * 注入自定义函数。
+     */
+    public void addCustomFunction(String name, cn.qihuang02.graaljs.binding.CustomFunction.Func func, java.lang.reflect.Type... argTypes) {
+        addCustomMember(new CustomMember(name, Object.class,
+                new cn.qihuang02.graaljs.binding.CustomFunction(name, func, argTypes)));
+    }
+
     private Map<String, CustomMember> collectCustomMembers(Object target) {
         Map<String, CustomMember> map = new LinkedHashMap<>();
         if (target instanceof CustomMemberProvider provider) {
@@ -191,8 +221,9 @@ abstract class AbstractReflectiveProxyObject implements ProxyObject, ProxyValue 
         if (other instanceof ProxyValue pv) {
             other = pv.unwrap();
         }
-        if (self instanceof SpecialEquality se) {
-            return se.specialEquals(other);
+        Boolean specialResult = SpecialEquality.checkSpecialEquality(context, self, other, false);
+        if (specialResult != null) {
+            return specialResult;
         }
         return self.equals(other);
     }

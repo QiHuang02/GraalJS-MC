@@ -10,6 +10,7 @@ import cn.qihuang02.graaljs.error.WrappedJavaException;
 import cn.qihuang02.graaljs.typewrap.EnumTypeWrapper;
 import cn.qihuang02.graaljs.typewrap.GenericTypeInfo;
 import cn.qihuang02.graaljs.typewrap.TypeWrapperFactory;
+import cn.qihuang02.graaljs.util.ArrayValueProvider;
 import cn.qihuang02.graaljs.util.ClassVisibilityContext;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
@@ -42,6 +43,7 @@ public class GraaljsContext {
     private final GraaljsContextFactory factory;
     private final ScriptType type;
     private final Map<Object, Object> wrappedValueCache;
+    private final Map<Object, Object> threadLocals;
     private Context context;
     private ModuleLoader moduleLoader;
 
@@ -49,6 +51,7 @@ public class GraaljsContext {
         this.factory = factory;
         this.type = type;
         this.wrappedValueCache = new IdentityHashMap<>();
+        this.threadLocals = new LinkedHashMap<>();
     }
 
     public GraaljsContextFactory getFactory() {
@@ -292,6 +295,195 @@ public class GraaljsContext {
         return AbstractClassAdapter.adapt(this, value, abstractType, interfaceTypes, constructorArgs);
     }
 
+    // ── ECMA 标准便捷转换 ──
+
+    /**
+     * ECMA ToBoolean 转换。
+     */
+    public boolean toBoolean(Object value) {
+        Object normalized = normalizeJsValue(value);
+        if (normalized == null) {
+            return false;
+        }
+        if (normalized instanceof Boolean bool) {
+            return bool;
+        }
+        if (normalized instanceof Number num) {
+            double d = num.doubleValue();
+            return d != 0 && !Double.isNaN(d);
+        }
+        if (normalized instanceof String str) {
+            return !str.isEmpty();
+        }
+        return true;
+    }
+
+    /**
+     * ECMA ToNumber 转换。
+     */
+    public double toNumber(Object value) {
+        Object normalized = normalizeJsValue(value);
+        if (normalized == null) {
+            return 0;
+        }
+        if (normalized instanceof Number num) {
+            return num.doubleValue();
+        }
+        if (normalized instanceof Boolean bool) {
+            return bool ? 1 : 0;
+        }
+        if (normalized instanceof String str) {
+            try {
+                return Double.parseDouble(str);
+            } catch (NumberFormatException e) {
+                return Double.NaN;
+            }
+        }
+        return Double.NaN;
+    }
+
+    /**
+     * ECMA ToString 转换。
+     */
+    public String toStringJS(Object value) {
+        Object normalized = normalizeJsValue(value);
+        if (normalized == null) {
+            return "null";
+        }
+        return String.valueOf(normalized);
+    }
+
+    /**
+     * 判断对象是否为类数组（List、数组、Iterable）。
+     */
+    public boolean isListLike(Object from) {
+        Object normalized = normalizeJsValue(from);
+        return normalized instanceof List<?>
+                || (normalized != null && normalized.getClass().isArray())
+                || normalized instanceof Iterable<?>;
+    }
+
+    /**
+     * 判断对象是否为类 Map。
+     */
+    public boolean isMapLike(Object from) {
+        Object normalized = normalizeJsValue(from);
+        return normalized instanceof Map<?, ?>;
+    }
+
+    // ── 集合工厂便捷方法 ──
+
+    /**
+     * 将值转换为指定元素类型的 List。
+     */
+    @SuppressWarnings("unchecked")
+    public <T> List<T> listOf(Object from, Class<T> elementType) {
+        if (from == null) {
+            return List.of();
+        }
+        Object normalized = normalizeJsValue(from);
+        if (normalized == null) {
+            return List.of();
+        }
+        if (normalized instanceof List<?> list) {
+            if (elementType == Object.class) {
+                return (List<T>) new ArrayList<>(list);
+            }
+            List<T> result = new ArrayList<>(list.size());
+            for (Object element : list) {
+                result.add(jsToJava(element, elementType));
+            }
+            return result;
+        }
+        // 单值包装为列表
+        return List.of(jsToJava(normalized, elementType));
+    }
+
+    /**
+     * 将值转换为指定元素类型的 Set。
+     */
+    @SuppressWarnings("unchecked")
+    public <T> Set<T> setOf(Object from, Class<T> elementType) {
+        if (from == null) {
+            return Set.of();
+        }
+        Object normalized = normalizeJsValue(from);
+        if (normalized == null) {
+            return Set.of();
+        }
+        if (normalized instanceof List<?> list) {
+            Set<T> result = new LinkedHashSet<>();
+            for (Object element : list) {
+                result.add(jsToJava(element, elementType));
+            }
+            return result;
+        }
+        return Set.of(jsToJava(normalized, elementType));
+    }
+
+    /**
+     * 将值转换为指定键值类型的 Map。
+     */
+    @SuppressWarnings("unchecked")
+    public <K, V> Map<K, V> mapOf(Object from, Class<K> keyType, Class<V> valueType) {
+        if (from == null) {
+            return Map.of();
+        }
+        Object normalized = normalizeJsValue(from);
+        if (normalized == null) {
+            return Map.of();
+        }
+        if (normalized instanceof Map<?, ?> map) {
+            Map<K, V> result = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                result.put(jsToJava(entry.getKey(), keyType), jsToJava(entry.getValue(), valueType));
+            }
+            return result;
+        }
+        return Map.of();
+    }
+
+    /**
+     * 将值转换为 List，如果值为 null 返回 null 而非空列表。
+     */
+    public List<Object> optionalListOf(Object from) {
+        if (from == null) {
+            return null;
+        }
+        return listOf(from, Object.class);
+    }
+
+    /**
+     * 将值包装为 {@link ArrayValueProvider}。
+     */
+    public ArrayValueProvider arrayValueProviderOf(Object value) {
+        Object normalized = normalizeJsValue(value);
+        return ArrayValueProvider.of(normalized);
+    }
+
+    // ── ThreadLocal 存储 ──
+
+    /**
+     * 获取线程本地存储的值。
+     */
+    public Object getThreadLocal(Object key) {
+        return threadLocals.get(key);
+    }
+
+    /**
+     * 设置线程本地存储的值。
+     */
+    public void putThreadLocal(Object key, Object value) {
+        threadLocals.put(key, value);
+    }
+
+    /**
+     * 移除线程本地存储的值。
+     */
+    public void removeThreadLocal(Object key) {
+        threadLocals.remove(key);
+    }
+
     public void loadScripts() {
         Path scriptDirectory = factory.resolveScriptDirectory(type);
         if (!Files.isDirectory(scriptDirectory)) {
@@ -326,6 +518,7 @@ public class GraaljsContext {
             context = null;
         }
         wrappedValueCache.clear();
+        threadLocals.clear();
     }
 
     private void loadScript(Path path) {

@@ -20,8 +20,7 @@ public class JavaMapProxy implements ProxyObject, ProxyValue {
             "size", "keys", "values", "entries",
             "has", "delete", "forEach", "clear",
             "toString",
-            // 新增方法
-            "get", "set"
+            "get", "set", "hasOwnProperty"
     );
 
     private final GraaljsContext context;
@@ -47,6 +46,7 @@ public class JavaMapProxy implements ProxyObject, ProxyValue {
             case "toString" -> (ProxyExecutable) this::toStringFn;
             case "get" -> (ProxyExecutable) this::getFn;
             case "set" -> (ProxyExecutable) this::setFn;
+            case "hasOwnProperty" -> (ProxyExecutable) this::hasOwnPropertyFn;
             default -> context.javaToJs(map.get(key));
         };
     }
@@ -167,5 +167,13 @@ public class JavaMapProxy implements ProxyObject, ProxyValue {
         Object value = context.jsToJava(args[1], Object.class);
         map.put(key, value);
         return this; // 返回 Map 自身，符合 JS Map.set() 语义
+    }
+
+    private Object hasOwnPropertyFn(Value... args) {
+        if (args.length == 0) {
+            return false;
+        }
+        String key = args[0].isString() ? args[0].asString() : String.valueOf(context.jsToJava(args[0], Object.class));
+        return map.containsKey(key);
     }
 }

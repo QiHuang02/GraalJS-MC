@@ -1,6 +1,8 @@
 package cn.qihuang02.graaljs.minecraft;
 
+import cn.qihuang02.graaljs.binding.GsonBridge;
 import cn.qihuang02.graaljs.typewrap.TypeWrappers;
+import com.google.gson.JsonElement;
 
 /**
  * Minecraft 类型包装器集中注册入口。
@@ -15,6 +17,8 @@ public final class MinecraftTypeWrappers {
         CompoundTagWrapper.register(wrappers);
         AABBWrapper.register(wrappers);
         BlockStateWrapper.register(wrappers);
+        // JsonElement ↔ JS 对象
+        wrappers.register(JsonElement.class, (cx, from, target) -> GsonBridge.javaToJsonElement(from));
         // 以下 Wrapper 依赖 Minecraft 运行时类（ResourceKey 等需要 SharedConstants 初始化），
         // 在纯测试环境中可能因类加载失败而跳过
         safeRegister("ResourceKeyWrapper", wrappers);

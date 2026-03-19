@@ -5,6 +5,7 @@ import cn.qihuang02.graaljs.binding.BindingsBuilder;
 import cn.qihuang02.graaljs.binding.ConsoleAPI;
 import cn.qihuang02.graaljs.binding.EventBusAPI;
 import cn.qihuang02.graaljs.binding.ForgeEventBridge;
+import cn.qihuang02.graaljs.binding.GsonBridge;
 import cn.qihuang02.graaljs.binding.JavaAPI;
 import cn.qihuang02.graaljs.binding.JavaAdapterAPI;
 import cn.qihuang02.graaljs.binding.RuntimeAPI;
@@ -282,6 +283,7 @@ public class GraaljsContextFactory {
         builder.add("events", eventBus);
         builder.add("scheduler", scheduler);
         builder.add("runtime", new RuntimeAPI(this, context));
+        builder.add("GSON", new GsonBridge(context));
         context.initialize(builder.build());
 
         activeContexts.put(type, context);
