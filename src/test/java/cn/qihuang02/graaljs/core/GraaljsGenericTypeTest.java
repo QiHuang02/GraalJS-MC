@@ -1,8 +1,8 @@
 package cn.qihuang02.graaljs.core;
 
-import cn.qihuang02.graaljs.binding.BindingsBuilder;
 import cn.qihuang02.graaljs.typewrap.GenericTypeInfo;
 import org.graalvm.polyglot.Value;
+import org.graalvm.polyglot.proxy.ProxyExecutable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -37,7 +37,6 @@ class GraaljsGenericTypeTest {
 
     @Test
     void shouldParseParameterizedType() throws Exception {
-        // 利用字段的泛型类型获取 ParameterizedType
         Type listOfString = GenericHolder.class.getDeclaredField("strings").getGenericType();
         GenericTypeInfo info = GenericTypeInfo.of(listOfString);
         assertEquals(List.class, info.rawType());
@@ -86,7 +85,7 @@ class GraaljsGenericTypeTest {
         assertEquals(3, result.size());
         assertEquals("hello", result.get(0));
         assertEquals("world", result.get(1));
-        assertEquals("42", result.get(2)); // 数字被转为字符串
+        assertEquals("42", result.get(2));
     }
 
     @Test
@@ -133,7 +132,6 @@ class GraaljsGenericTypeTest {
         GraaljsContext context = createContext();
         Value jsArray = context.eval("rawList.js", "[1, 'two', true]");
 
-        // 无泛型参数时，行为与旧版一致
         List<?> result = context.jsToJava(jsArray, List.class);
 
         assertNotNull(result);
@@ -214,9 +212,6 @@ class GraaljsGenericTypeTest {
         List<List<Integer>> listOfLists;
     }
 
-    /**
-     * 暴露给 JS 的 Java 对象，方法参数带泛型。
-     */
     public static class GenericService {
         public String joinStrings(List<String> items) {
             return String.join(",", items);
@@ -242,16 +237,10 @@ class GraaljsGenericTypeTest {
         }
     }
 
-    /**
-     * 接口方法返回泛型集合。
-     */
     public interface StringListProvider {
         List<String> provide();
     }
 
-    /**
-     * 构造函数带泛型参数的类。
-     */
     public static class GenericConstructible {
         private final List<String> items;
 
@@ -270,20 +259,23 @@ class GraaljsGenericTypeTest {
         }
 
         @Override
-        protected void configureBindings(ScriptType type, BindingsBuilder builder) {
-            super.configureBindings(type, builder);
-            builder.add("genericHolder", new GenericService())
-                    .addClass("GenericConstructible", GenericConstructible.class)
-                    .addTypedFunction("useStringListProvider", (context, args) -> {
-                        StringListProvider provider = (StringListProvider) args[0];
-                        List<String> result = provider.provide();
-                        return String.join(",", result);
-                    }, StringListProvider.class)
-                    .addGenericTypedFunction("joinStringList", (context, args) -> {
-                        @SuppressWarnings("unchecked")
-                        List<String> list = (List<String>) args[0];
-                        return String.join("|", list);
-                    }, parameterizedType(List.class, String.class));
+        protected void configureBindings(ScriptType type, Map<String, Object> bindings) {
+            super.configureBindings(type, bindings);
+            bindings.put("genericHolder", new GenericService());
+            bindings.put("GenericConstructible", GenericConstructible.class);
+            bindings.put("useStringListProvider", (ProxyExecutable) args -> {
+                GraaljsContext ctx = TestFactory.this.current();
+                StringListProvider provider = ctx.jsToJava(args[0], StringListProvider.class);
+                List<String> result = provider.provide();
+                return String.join(",", result);
+            });
+            bindings.put("joinStringList", (ProxyExecutable) args -> {
+                GraaljsContext ctx = TestFactory.this.current();
+                GenericTypeInfo listOfString = GenericTypeInfo.of(List.class, String.class);
+                @SuppressWarnings("unchecked")
+                List<String> list = ctx.jsToJava(args[0], listOfString);
+                return String.join("|", list);
+            });
         }
     }
 

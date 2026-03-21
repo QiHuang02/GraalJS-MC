@@ -1,8 +1,8 @@
 package cn.qihuang02.graaljs.error;
 
-import cn.qihuang02.graaljs.Graaljs;
 import cn.qihuang02.graaljs.core.GraaljsContext;
 import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 默认基于日志的错误报告实现。
@@ -11,7 +11,7 @@ public class LoggingErrorReporter implements ErrorReporter {
     private final Logger logger;
 
     public LoggingErrorReporter() {
-        this(Graaljs.LOGGER);
+        this(LoggerFactory.getLogger(LoggingErrorReporter.class));
     }
 
     public LoggingErrorReporter(Logger logger) {

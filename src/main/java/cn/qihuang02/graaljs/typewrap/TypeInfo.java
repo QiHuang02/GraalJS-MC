@@ -19,7 +19,14 @@ public sealed interface TypeInfo
                 TypeInfo.ParameterizedTypeInfo,
                 TypeInfo.EnumTypeInfo,
                 TypeInfo.RecordTypeInfo,
-                TypeInfo.FunctionalInterfaceTypeInfo {
+                TypeInfo.FunctionalInterfaceTypeInfo,
+                JSOrTypeInfo,
+                JSObjectTypeInfo,
+                JSFunctionTypeInfo,
+                JSFixedArrayTypeInfo,
+                JSBasicConstantTypeInfo,
+                JSStringConstantTypeInfo,
+                JSNumberConstantTypeInfo {
 
     /** 原始 Class 对象 */
     Class<?> rawType();
@@ -69,6 +76,37 @@ public sealed interface TypeInfo
     /** 创建此类型的数组 */
     default Object newArray(int length) {
         return java.lang.reflect.Array.newInstance(rawType(), length);
+    }
+
+    // ── JS 类型构建方法 ──
+
+    /**
+     * 构建联合类型 {@code this | other}。
+     * 如果任一侧已经是 JSOrTypeInfo，会自动展平。
+     */
+    default TypeInfo or(TypeInfo other) {
+        return JSOrTypeInfo.of(this, other);
+    }
+
+    /**
+     * 将此类型追加到 StringBuilder，使用给定的上下文控制格式。
+     * Java 侧子类型默认使用 {@link #describe()}，JS* 子类型各自覆盖。
+     */
+    default void append(TypeStringContext ctx, StringBuilder sb) {
+        if (rawType() != Object.class) {
+            sb.append(ctx.getTypeName(rawType()));
+        } else {
+            sb.append(describe());
+        }
+    }
+
+    /**
+     * 使用默认上下文将类型序列化为字符串。
+     */
+    default String toString(TypeStringContext ctx) {
+        StringBuilder sb = new StringBuilder();
+        append(ctx, sb);
+        return sb.toString();
     }
 
     // ── 工厂方法 ──

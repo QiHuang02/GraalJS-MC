@@ -1,23 +1,18 @@
 package cn.qihuang02.graaljs;
 
-import cn.qihuang02.graaljs.command.GraaljsCommand;
 import cn.qihuang02.graaljs.core.GraaljsContextFactory;
 import cn.qihuang02.graaljs.core.ScriptType;
 import com.mojang.logging.LogUtils;
 import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
 import net.minecraftforge.event.server.ServerStartedEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
-import net.minecraftforge.fml.loading.FMLEnvironment;
-import net.minecraftforge.server.ServerLifecycleHooks;
+import net.minecraftforge.fml.loading.FMLPaths;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
-
-import java.util.Map;
 
 @Mod(Graaljs.MODID)
 public class Graaljs {
@@ -31,12 +26,9 @@ public class Graaljs {
     public Graaljs() {
         LOGGER.info("GraalJS-MC initializing...");
 
-        localFactory = new GraaljsContextFactory();
+        localFactory = new GraaljsContextFactory(FMLPaths.GAMEDIR.get());
         factory = localFactory;
         localFactory.createAndLoad(ScriptType.STARTUP);
-        localFactory.emitEvent(ScriptType.STARTUP, "game.startup", Map.of(
-                "modId", MODID
-        ));
 
         MinecraftForge.EVENT_BUS.register(this);
     }
@@ -46,54 +38,22 @@ public class Graaljs {
     }
 
     /**
-     * 完全关闭所有上下文，包括客户端状态重置。
+     * 完全关闭所有上下文。
      * 在 mod 卸载或需要完全重置时调用。
      */
     public static void shutdownAll() {
-        // 客户端环境下先关闭 ClientEvents 状态
-        if (FMLEnvironment.dist.isClient()) {
-            ClientEvents.shutdown();
-        }
         if (factory != null) {
             factory.closeAll();
         }
     }
 
     @SubscribeEvent
-    public void onRegisterCommands(@NotNull RegisterCommandsEvent event) {
-        GraaljsCommand.register(event.getDispatcher());
-    }
-
-    @SubscribeEvent
     public void onServerStarting(@NotNull ServerStartingEvent event) {
         localFactory.createAndLoad(ScriptType.SERVER);
-        localFactory.emitEvent(ScriptType.SERVER, "server.starting", Map.of(
-                "server", event.getServer()
-        ));
-    }
-
-    @SubscribeEvent
-    public void onServerStarted(@NotNull ServerStartedEvent event) {
-        localFactory.emitEvent(ScriptType.SERVER, "server.started", Map.of(
-                "server", event.getServer()
-        ));
     }
 
     @SubscribeEvent
     public void onServerStopping(@NotNull ServerStoppingEvent event) {
-        localFactory.emitEvent(ScriptType.SERVER, "server.stopping", Map.of(
-                "server", event.getServer()
-        ));
         localFactory.close(ScriptType.SERVER);
-    }
-
-    @SubscribeEvent
-    public void onServerTick(@NotNull TickEvent.ServerTickEvent event) {
-        if (event.phase == TickEvent.Phase.END) {
-            var server = ServerLifecycleHooks.getCurrentServer();
-            if (server != null) {
-                localFactory.tickScheduler(ScriptType.SERVER, server.getTickCount() * 50L);
-            }
-        }
     }
 }

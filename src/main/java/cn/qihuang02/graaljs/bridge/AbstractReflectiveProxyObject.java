@@ -4,12 +4,9 @@ import cn.qihuang02.graaljs.core.GraaljsContext;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyObject;
 
-import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.util.Collection;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -19,11 +16,13 @@ import java.util.Set;
 abstract class AbstractReflectiveProxyObject implements ProxyObject, ProxyValue {
     protected final GraaljsContext context;
     protected final CachedClassInfo cachedClassInfo;
+    protected final CachedMemberLookup lookup;
     private Map<String, CustomMember> customMembers;
 
     protected AbstractReflectiveProxyObject(GraaljsContext context, Class<?> type) {
         this.context = context;
         this.cachedClassInfo = context.getFactory().getCachedClassStorage().get(type);
+        this.lookup = cachedClassInfo.getMemberLookup();
     }
 
     protected abstract Object target();
@@ -36,6 +35,8 @@ abstract class AbstractReflectiveProxyObject implements ProxyObject, ProxyValue 
 
     @Override
     public Object getMember(String key) {
+        if (lookup == null) return null;
+
         Map<String, CustomMember> customMembers = customMembers();
         CustomMember customMember = customMembers.get(key);
         if (customMember != null) {
@@ -46,24 +47,24 @@ abstract class AbstractReflectiveProxyObject implements ProxyObject, ProxyValue 
             return context.javaToJs(value);
         }
 
-        Field field = cachedClassInfo.findField(key, staticOnly());
+        CachedFieldInfo fieldInfo = lookup.findField(key, staticOnly());
         Object fieldTarget = target();
-        if (field == null && allowInstanceStaticFallback()) {
-            field = cachedClassInfo.findField(key, true);
+        if (fieldInfo == null && allowInstanceStaticFallback()) {
+            fieldInfo = lookup.findField(key, true);
             fieldTarget = null;
         }
-        if (field != null) {
+        if (fieldInfo != null) {
             try {
-                return context.javaToJs(field.get(fieldTarget));
+                return context.javaToJs(fieldInfo.field().get(fieldTarget));
             } catch (IllegalAccessException exception) {
-                throw new IllegalStateException("Failed to access field: " + field, exception);
+                throw new IllegalStateException("Failed to access field: " + fieldInfo.name(), exception);
             }
         }
 
         // Bean property lookup (after field, before method)
-        CachedClassInfo.BeanProperty beanProp = cachedClassInfo.findBeanProperty(key, staticOnly());
+        CachedBeanPropertyInfo beanProp = lookup.findBeanProperty(key, staticOnly());
         if (beanProp == null && allowInstanceStaticFallback()) {
-            beanProp = cachedClassInfo.findBeanProperty(key, true);
+            beanProp = lookup.findBeanProperty(key, true);
         }
         if (beanProp != null && beanProp.getter() != null) {
             try {
@@ -74,12 +75,12 @@ abstract class AbstractReflectiveProxyObject implements ProxyObject, ProxyValue 
             }
         }
 
-        List<java.lang.reflect.Method> methods = cachedClassInfo.findMethods(key, staticOnly());
-        if ((methods == null || methods.isEmpty()) && allowInstanceStaticFallback()) {
-            methods = cachedClassInfo.findMethods(key, true);
+        CachedMethodGroupInfo methodGroup = lookup.findMethodGroup(key, staticOnly());
+        if (methodGroup == null && allowInstanceStaticFallback()) {
+            methodGroup = lookup.findMethodGroup(key, true);
         }
-        if (methods != null && !methods.isEmpty()) {
-            JavaMethodProxy proxy = new JavaMethodProxy(context, target(), methods);
+        if (methodGroup != null) {
+            JavaMethodProxy proxy = new JavaMethodProxy(context, target(), methodGroup.methods());
             proxy.setOwnerProxy(this);
             return proxy;
         }
@@ -89,10 +90,12 @@ abstract class AbstractReflectiveProxyObject implements ProxyObject, ProxyValue 
 
     @Override
     public Object getMemberKeys() {
+        if (lookup == null) return new String[0];
+
         Map<String, CustomMember> customMembers = customMembers();
-        Set<String> keys = new java.util.LinkedHashSet<>(cachedClassInfo.memberKeys(staticOnly()));
+        Set<String> keys = new java.util.LinkedHashSet<>(lookup.memberKeys(staticOnly()));
         if (allowInstanceStaticFallback()) {
-            keys.addAll(cachedClassInfo.memberKeys(true));
+            keys.addAll(lookup.memberKeys(true));
         }
         keys.addAll(customMembers.keySet());
         return keys.toArray(String[]::new);
@@ -100,20 +103,24 @@ abstract class AbstractReflectiveProxyObject implements ProxyObject, ProxyValue 
 
     @Override
     public boolean hasMember(String key) {
+        if (lookup == null) return false;
+
         Map<String, CustomMember> customMembers = customMembers();
         return customMembers.containsKey(key)
-                || cachedClassInfo.findField(key, staticOnly()) != null
-                || cachedClassInfo.findBeanProperty(key, staticOnly()) != null
-                || cachedClassInfo.findMethods(key, staticOnly()) != null
+                || lookup.findField(key, staticOnly()) != null
+                || lookup.findBeanProperty(key, staticOnly()) != null
+                || lookup.findMethodGroup(key, staticOnly()) != null
                 || allowInstanceStaticFallback() && (
-                cachedClassInfo.findField(key, true) != null
-                        || cachedClassInfo.findBeanProperty(key, true) != null
-                        || cachedClassInfo.findMethods(key, true) != null
+                lookup.findField(key, true) != null
+                        || lookup.findBeanProperty(key, true) != null
+                        || lookup.findMethodGroup(key, true) != null
         );
     }
 
     @Override
     public void putMember(String key, Value value) {
+        if (lookup == null) throw new UnsupportedOperationException("Unknown member: " + key);
+
         Map<String, CustomMember> customMembers = customMembers();
         CustomMember customMember = customMembers.get(key);
         if (customMember != null) {
@@ -121,25 +128,25 @@ abstract class AbstractReflectiveProxyObject implements ProxyObject, ProxyValue 
             return;
         }
 
-        Field field = cachedClassInfo.findField(key, staticOnly());
+        CachedFieldInfo fieldInfo = lookup.findField(key, staticOnly());
         Object fieldTarget = target();
-        if (field == null && allowInstanceStaticFallback()) {
-            field = cachedClassInfo.findField(key, true);
+        if (fieldInfo == null && allowInstanceStaticFallback()) {
+            fieldInfo = lookup.findField(key, true);
             fieldTarget = null;
         }
-        if (field != null) {
+        if (fieldInfo != null) {
             try {
-                field.set(fieldTarget, context.jsToJava(value, field.getType()));
+                fieldInfo.field().set(fieldTarget, context.jsToJava(value, fieldInfo.field().getType()));
             } catch (IllegalAccessException exception) {
-                throw new IllegalStateException("Failed to set field: " + field, exception);
+                throw new IllegalStateException("Failed to set field: " + fieldInfo.name(), exception);
             }
             return;
         }
 
         // Bean property setter lookup
-        CachedClassInfo.BeanProperty beanProp = cachedClassInfo.findBeanProperty(key, staticOnly());
+        CachedBeanPropertyInfo beanProp = lookup.findBeanProperty(key, staticOnly());
         if (beanProp == null && allowInstanceStaticFallback()) {
-            beanProp = cachedClassInfo.findBeanProperty(key, true);
+            beanProp = lookup.findBeanProperty(key, true);
         }
         if (beanProp != null) {
             if (beanProp.setter() == null) {
@@ -177,14 +184,6 @@ abstract class AbstractReflectiveProxyObject implements ProxyObject, ProxyValue 
      */
     public void addCustomProperty(String name, Class<?> type, CustomProperty getter) {
         addCustomMember(new CustomMember(name, type, getter));
-    }
-
-    /**
-     * 注入自定义函数。
-     */
-    public void addCustomFunction(String name, cn.qihuang02.graaljs.binding.CustomFunction.Func func, java.lang.reflect.Type... argTypes) {
-        addCustomMember(new CustomMember(name, Object.class,
-                new cn.qihuang02.graaljs.binding.CustomFunction(name, func, argTypes)));
     }
 
     private Map<String, CustomMember> collectCustomMembers(Object target) {
