@@ -1,6 +1,5 @@
 package cn.qihuang02.graaljs.core;
 
-import cn.qihuang02.graaljs.Graaljs;
 import cn.qihuang02.graaljs.bridge.AbstractClassAdapter;
 import cn.qihuang02.graaljs.bridge.InterfaceAdapter;
 import cn.qihuang02.graaljs.bridge.ProxyValue;
@@ -12,6 +11,8 @@ import cn.qihuang02.graaljs.typewrap.GenericTypeInfo;
 import cn.qihuang02.graaljs.typewrap.TypeWrapperFactory;
 import cn.qihuang02.graaljs.util.ArrayValueProvider;
 import cn.qihuang02.graaljs.util.ClassVisibilityContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
@@ -40,6 +41,7 @@ import java.util.stream.Stream;
  * GraalJS 执行上下文。
  */
 public class GraaljsContext {
+    private static final Logger LOGGER = LoggerFactory.getLogger(GraaljsContext.class);
     private final GraaljsContextFactory factory;
     private final ScriptType type;
     private final Map<Object, Object> wrappedValueCache;
@@ -138,6 +140,9 @@ public class GraaljsContext {
             return null;
         }
         if (value instanceof String || value instanceof Number || value instanceof Boolean || value instanceof ProxyObject) {
+            return value;
+        }
+        if (value instanceof org.graalvm.polyglot.proxy.ProxyExecutable) {
             return value;
         }
         if (value instanceof Character character) {
@@ -490,9 +495,9 @@ public class GraaljsContext {
             try {
                 Files.createDirectories(scriptDirectory);
             } catch (IOException exception) {
-                Graaljs.LOGGER.error("Failed to create script directory: {}", scriptDirectory, exception);
+                LOGGER.error("Failed to create script directory: {}", scriptDirectory, exception);
             }
-            Graaljs.LOGGER.info("No scripts found in {}", scriptDirectory);
+            LOGGER.info("No scripts found in {}", scriptDirectory);
             return;
         }
 
@@ -501,7 +506,7 @@ public class GraaljsContext {
                     .sorted()
                     .forEach(this::loadScript);
         } catch (IOException exception) {
-            Graaljs.LOGGER.error("Failed to scan script directory: {}", scriptDirectory, exception);
+            LOGGER.error("Failed to scan script directory: {}", scriptDirectory, exception);
         }
     }
 
@@ -513,7 +518,7 @@ public class GraaljsContext {
             try {
                 context.close();
             } catch (Exception exception) {
-                Graaljs.LOGGER.warn("Error closing context for {}: {}", type.directory, exception.getMessage());
+                LOGGER.warn("Error closing context for {}: {}", type.directory, exception.getMessage());
             }
             context = null;
         }
@@ -537,11 +542,11 @@ public class GraaljsContext {
                     moduleLoader.popScriptPath();
                 }
             }
-            Graaljs.LOGGER.info("Loaded {} script: {}", type.name().toLowerCase(), path);
+            LOGGER.info("Loaded {} script: {}", type.name().toLowerCase(), path);
         } catch (IOException exception) {
-            Graaljs.LOGGER.error("Failed to load script source: {}", path, exception);
+            LOGGER.error("Failed to load script source: {}", path, exception);
         } catch (RuntimeException exception) {
-            Graaljs.LOGGER.error("Failed to evaluate script: {}", path, exception);
+            LOGGER.error("Failed to evaluate script: {}", path, exception);
         }
     }
 
@@ -599,77 +604,11 @@ public class GraaljsContext {
     }
 
     private Object normalizeJsValue(Object from) {
-        if (!(from instanceof Value value)) {
-            return from;
-        }
-        if (value.isNull()) {
-            return null;
-        }
-        if (value.isProxyObject()) {
-            Object proxyObject = value.asProxyObject();
-            if (proxyObject instanceof ProxyValue proxyValue) {
-                return proxyValue.unwrap();
-            }
-            return proxyObject;
-        }
-        if (value.isHostObject()) {
-            return value.asHostObject();
-        }
-        if (value.isString()) {
-            return value.asString();
-        }
-        if (value.isBoolean()) {
-            return value.asBoolean();
-        }
-        if (value.isNumber()) {
-            if (value.fitsInInt()) {
-                return value.asInt();
-            }
-            if (value.fitsInLong()) {
-                return value.asLong();
-            }
-            return value.asDouble();
-        }
-        if (value.hasArrayElements()) {
-            List<Object> list = new ArrayList<>();
-            for (long i = 0; i < value.getArraySize(); i++) {
-                list.add(normalizeJsValue(value.getArrayElement(i)));
-            }
-            return list;
-        }
-        if (value.hasMembers()) {
-            Map<String, Object> map = new LinkedHashMap<>();
-            for (String memberKey : value.getMemberKeys()) {
-                map.put(memberKey, normalizeJsValue(value.getMember(memberKey)));
-            }
-            return map;
-        }
-        return value.as(Object.class);
+        return JsValueNormalizer.normalize(from);
     }
 
-    @SuppressWarnings("unchecked")
     private <T> T convertNumber(Class<T> target, Object normalized) {
-        if (!(normalized instanceof Number number)) {
-            throw new IllegalArgumentException("Cannot convert non-number to " + target.getName());
-        }
-
-        Object result;
-        if (target == Integer.class || target == int.class) {
-            result = number.intValue();
-        } else if (target == Long.class || target == long.class) {
-            result = number.longValue();
-        } else if (target == Double.class || target == double.class) {
-            result = number.doubleValue();
-        } else if (target == Float.class || target == float.class) {
-            result = number.floatValue();
-        } else if (target == Short.class || target == short.class) {
-            result = number.shortValue();
-        } else if (target == Byte.class || target == byte.class) {
-            result = number.byteValue();
-        } else {
-            result = number;
-        }
-        return castValue(target, result);
+        return NumberConverter.convert(target, normalized);
     }
 
     @SuppressWarnings("unchecked")
@@ -790,64 +729,10 @@ public class GraaljsContext {
     }
 
     private static Class<?> box(Class<?> type) {
-        if (!type.isPrimitive()) {
-            return type;
-        }
-        if (type == boolean.class) {
-            return Boolean.class;
-        }
-        if (type == int.class) {
-            return Integer.class;
-        }
-        if (type == long.class) {
-            return Long.class;
-        }
-        if (type == double.class) {
-            return Double.class;
-        }
-        if (type == float.class) {
-            return Float.class;
-        }
-        if (type == short.class) {
-            return Short.class;
-        }
-        if (type == byte.class) {
-            return Byte.class;
-        }
-        if (type == char.class) {
-            return Character.class;
-        }
-        return type;
+        return NumberConverter.box(type);
     }
 
     private static Object defaultValue(Class<?> type) {
-        if (!type.isPrimitive()) {
-            return null;
-        }
-        if (type == boolean.class) {
-            return false;
-        }
-        if (type == char.class) {
-            return '\0';
-        }
-        if (type == byte.class) {
-            return (byte) 0;
-        }
-        if (type == short.class) {
-            return (short) 0;
-        }
-        if (type == int.class) {
-            return 0;
-        }
-        if (type == long.class) {
-            return 0L;
-        }
-        if (type == float.class) {
-            return 0F;
-        }
-        if (type == double.class) {
-            return 0D;
-        }
-        return null;
+        return NumberConverter.defaultValue(type);
     }
 }

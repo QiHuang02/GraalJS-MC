@@ -1,8 +1,9 @@
 package cn.qihuang02.graaljs.core;
 
-import cn.qihuang02.graaljs.Graaljs;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -21,6 +22,7 @@ import java.util.Set;
  * 每个模块只执行一次，后续调用返回缓存的 {@code module.exports}。
  */
 public class ModuleLoader {
+    private static final Logger LOGGER = LoggerFactory.getLogger(ModuleLoader.class);
     private static final String MODULE_WRAPPER_PREFIX =
             "(function(exports, require, module, __filename, __dirname) {\n";
     private static final String MODULE_WRAPPER_SUFFIX =
@@ -57,7 +59,7 @@ public class ModuleLoader {
         if (cachedModule != null) {
             // 循环依赖检测：模块在缓存中但仍在加载中，返回部分初始化的 exports
             if (loading.contains(resolved)) {
-                Graaljs.LOGGER.warn("Circular dependency detected: {} requires {} (returning partially initialized exports)",
+                LOGGER.warn("Circular dependency detected: {} requires {} (returning partially initialized exports)",
                         currentScriptPath(), resolved);
             }
             return cachedModule.getMember("exports");
@@ -288,7 +290,7 @@ public class ModuleLoader {
             }
             return mainPath;
         } catch (IOException e) {
-            Graaljs.LOGGER.warn("Failed to read package.json: {}", packageJsonPath, e);
+            LOGGER.warn("Failed to read package.json: {}", packageJsonPath, e);
             return null;
         }
     }

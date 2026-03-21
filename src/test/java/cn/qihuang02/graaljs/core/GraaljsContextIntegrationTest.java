@@ -1,27 +1,18 @@
 package cn.qihuang02.graaljs.core;
 
-import cn.qihuang02.graaljs.binding.BindingsBuilder;
-import cn.qihuang02.graaljs.binding.ForgeEventBridge;
 import cn.qihuang02.graaljs.bridge.CustomMember;
 import cn.qihuang02.graaljs.bridge.CustomMemberProvider;
 import cn.qihuang02.graaljs.error.ErrorReporter;
 import cn.qihuang02.graaljs.error.GraaljsException;
 import cn.qihuang02.graaljs.error.ScriptException;
-import cn.qihuang02.graaljs.error.WrappedJavaException;
 import cn.qihuang02.graaljs.util.ClassVisibilityContext;
 import cn.qihuang02.graaljs.util.CustomJavaToJsWrapper;
 import cn.qihuang02.graaljs.util.HideFromJS;
 import cn.qihuang02.graaljs.util.RemapForJS;
 import cn.qihuang02.graaljs.util.RemapPrefixForJS;
-import net.minecraft.core.BlockPos;
-import net.minecraft.network.chat.Component;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.world.phys.Vec3;
-import net.minecraftforge.eventbus.api.BusBuilder;
-import net.minecraftforge.eventbus.api.Event;
-import net.minecraftforge.eventbus.api.IEventBus;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
+import org.graalvm.polyglot.proxy.ProxyExecutable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -145,7 +136,6 @@ class GraaljsContextIntegrationTest {
         assertFalse(factory.visibleToScripts("java.nio.file.Files", ClassVisibilityContext.MEMBER));
         assertTrue(factory.visibleToScripts("java.util.ArrayList", ClassVisibilityContext.RETURN_TYPE));
 
-        // 新增黑名单类验证
         assertFalse(factory.visibleToScripts("java.lang.ClassLoader", ClassVisibilityContext.CLASS_LOOKUP));
         assertFalse(factory.visibleToScripts("java.lang.Thread", ClassVisibilityContext.CLASS_LOOKUP));
         assertFalse(factory.visibleToScripts("java.lang.invoke.MethodHandle", ClassVisibilityContext.CLASS_LOOKUP));
@@ -167,37 +157,10 @@ class GraaljsContextIntegrationTest {
         assertNull(factory.resolveVisibleClassOrNull("java.util.ArrayList", ClassVisibilityContext.PACKAGE_LOOKUP));
         assertTrue(factory.resolveVisibleClassOrNull("java.util.ArrayList", ClassVisibilityContext.CLASS_LOOKUP) != null);
 
-        context.eval("contextVisibility.js", """
-                hiddenLookup = Java.typeOrNull('cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$ConstructibleType') === null;
-                hiddenLookupVisible = Java.isVisible('cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$ConstructibleType') === false;
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertTrue(bindings.getMember("hiddenLookup").asBoolean());
-        assertTrue(bindings.getMember("hiddenLookupVisible").asBoolean());
-
         IllegalArgumentException packageLookupException = assertThrows(IllegalArgumentException.class, () ->
                 factory.resolveVisibleClass("java.util.ArrayList", ClassVisibilityContext.PACKAGE_LOOKUP)
         );
         assertTrue(packageLookupException.getMessage().contains("not visible"));
-
-        cn.qihuang02.graaljs.binding.RuntimeAPI runtimeApi = new cn.qihuang02.graaljs.binding.RuntimeAPI(factory, context);
-        IllegalArgumentException interfaceException = assertThrows(IllegalArgumentException.class, () ->
-                runtimeApi.proxy(
-                        context.eval("hiddenInterface.js", "(value => value)"),
-                        "cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$GreetingCallback"
-                )
-        );
-        assertTrue(interfaceException.getMessage().contains("not visible"));
-
-        IllegalArgumentException abstractException = assertThrows(IllegalArgumentException.class, () ->
-                runtimeApi.extend(
-                        context.eval("hiddenAbstract.js", "({ greet(name) { return name; } })"),
-                        "cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$AbstractGreeter",
-                        "prefix"
-                )
-        );
-        assertTrue(abstractException.getMessage().contains("not visible"));
     }
 
     @Test
@@ -314,164 +277,12 @@ class GraaljsContextIntegrationTest {
     }
 
     @Test
-    void shouldBindCurrentContextAndExposeMinecraftTypeWrappers() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext entered = factory.enter(ScriptType.STARTUP);
-
-        assertSame(entered, factory.current());
-
-        GraaljsContext context = factory.getContext(ScriptType.STARTUP);
-        ResourceLocation resourceLocation = context.jsToJava("minecraft:stone", ResourceLocation.class);
-        BlockPos blockPosFromArray = context.jsToJava(context.eval("blockPos.js", "[1, 2, 3]"), BlockPos.class);
-        BlockPos blockPosFromString = context.jsToJava("4 5 6", BlockPos.class);
-        Vec3 vec3FromMap = context.jsToJava(context.eval("vec3.js", "({ x: 1.5, y: 2.5, z: 3.5 })"), Vec3.class);
-        Component component = context.jsToJava("hello", Component.class);
-        Runnable runnable = context.asInterface(context.eval("interface.js", "(() => 1)"), Runnable.class);
-        runnable.run();
-
-        assertEquals("minecraft", resourceLocation.getNamespace());
-        assertEquals("stone", resourceLocation.getPath());
-        assertEquals(new BlockPos(1, 2, 3), blockPosFromArray);
-        assertEquals(new BlockPos(4, 5, 6), blockPosFromString);
-        assertEquals(new Vec3(1.5, 2.5, 3.5), vec3FromMap);
-        assertEquals("hello", component.getString());
-    }
-
-    @Test
-    void shouldExposeRuntimeBinding() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        context.eval("runtime.js", """
-                runtimeType = runtime.scriptType();
-                wrappedType = runtime.wrap(TestStatics).NAME;
-                runtimeClass = runtime.type('cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$ConstructibleType');
-                builderText = new runtimeClass('ab', 2).summary();
-                """);
-
-        assertEquals("startup", context.getPolyglotContext().getBindings("js").getMember("runtimeType").asString());
-        assertEquals("STATIC", context.getPolyglotContext().getBindings("js").getMember("wrappedType").asString());
-        assertEquals("ab:2", context.getPolyglotContext().getBindings("js").getMember("builderText").asString());
-    }
-
-    @Test
-    void shouldExposeRhinoStyleJavaBindings() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        context.eval("javaBindings.js", """
-                ConstructibleClass = Java.type('cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$ConstructibleType');
-                builderA = new ConstructibleClass('ab', 2).summary();
-                packageList = new Packages.java.util.ArrayList();
-                packageList[0] = 'x';
-                packageList[1] = 'y';
-                builderB = packageList[0] + packageList[1] + ':' + packageList.length;
-                listSize = new java.util.ArrayList().length;
-                visibleString = Java.isVisible('java.lang.String');
-                hiddenRuntime = Java.isVisible('java.lang.Runtime');
-                missingType = Java.typeOrNull('java.lang.DoesNotExist') === null;
-                blockedType = Java.typeOrNull('java.lang.Runtime') === null;
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertEquals("ab:2", bindings.getMember("builderA").asString());
-        assertEquals("xy:2", bindings.getMember("builderB").asString());
-        assertEquals(0, bindings.getMember("listSize").asInt());
-        assertTrue(bindings.getMember("visibleString").asBoolean());
-        assertFalse(bindings.getMember("hiddenRuntime").asBoolean());
-        assertTrue(bindings.getMember("missingType").asBoolean());
-        assertTrue(bindings.getMember("blockedType").asBoolean());
-    }
-
-    @Test
-    void shouldDispatchEventCallbacksInsideContext() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        context.eval("events.js", """
-                registerCount = events.on('tick', payload => {
-                    firstSeen = payload.text;
-                    firstCount = payload.count;
-                });
-                secondRegisterCount = events.on('tick', payload => {
-                    secondSeen = payload.text + ':' + payload.count;
-                });
-                emittedCount = events.emit('tick', { text: 'demo', count: 2 });
-                listenerCount = events.listenerCount('tick');
-                cleared = events.clear('tick');
-                afterClearCount = events.listenerCount('tick');
-                emittedAfterClear = events.emit('tick', { text: 'ignored', count: 99 });
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertEquals(1, bindings.getMember("registerCount").asInt());
-        assertEquals(2, bindings.getMember("secondRegisterCount").asInt());
-        assertEquals(2, bindings.getMember("emittedCount").asInt());
-        assertEquals("demo", bindings.getMember("firstSeen").asString());
-        assertEquals(2, bindings.getMember("firstCount").asInt());
-        assertEquals("demo:2", bindings.getMember("secondSeen").asString());
-        assertEquals(2, bindings.getMember("listenerCount").asInt());
-        assertTrue(bindings.getMember("cleared").asBoolean());
-        assertEquals(0, bindings.getMember("afterClearCount").asInt());
-        assertEquals(0, bindings.getMember("emittedAfterClear").asInt());
-    }
-
-    @Test
-    void shouldReceiveHostLifecycleEvents() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.SERVER);
-
-        context.eval("hostEvents.js", """
-                onceCount = 0;
-                events.on('server.started', event => {
-                    exactName = event.name;
-                    exactType = event.scriptType;
-                    exactMessage = event.payload.message;
-                });
-                events.once('server.started', event => {
-                    onceCount = onceCount + 1;
-                });
-                removable = event => { removed = true; };
-                events.on('server.started', removable);
-                removedListeners = events.off('server.started', removable);
-                events.on('*', event => {
-                    wildcardName = event.name;
-                    wildcardType = event.scriptType;
-                    wildcardMessage = event.payload.message;
-                });
-                """);
-
-        int firstDispatch = factory.emitEvent(ScriptType.SERVER, "server.started", Map.of("message", "ready"));
-        int secondDispatch = factory.emitEvent(ScriptType.SERVER, "server.started", Map.of("message", "again"));
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertEquals(3, firstDispatch);
-        assertEquals(2, secondDispatch);
-        assertEquals(1, bindings.getMember("removedListeners").asInt());
-        assertEquals("server.started", bindings.getMember("exactName").asString());
-        assertEquals("server", bindings.getMember("exactType").asString());
-        assertEquals("again", bindings.getMember("exactMessage").asString());
-        assertEquals(1, bindings.getMember("onceCount").asInt());
-        assertEquals("server.started", bindings.getMember("wildcardName").asString());
-        assertEquals("server", bindings.getMember("wildcardType").asString());
-        assertEquals("again", bindings.getMember("wildcardMessage").asString());
-    }
-
-    @Test
     void shouldAdaptMultiMethodInterfaces() {
         TestFactory factory = new TestFactory(tempDir, new TestBindings());
         GraaljsContext context = factory.create(ScriptType.STARTUP);
 
         MultiCallback callback = context.jsToJava(context.eval("multi.js", "({ open(name) { return 'open:' + name; }, close() { return 'close'; } })"), MultiCallback.class);
         assertEquals("open:door|close", callback.open("door") + "|" + callback.close());
-
-        context.eval("runtimeAdapt.js", """
-                adaptedSummary = useMultiCallback(runtime.adapt({
-                    open(name) { return 'js:' + name; },
-                    close() { return 'done'; }
-                }, 'cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$MultiCallback'));
-                """);
-        assertEquals("js:input|done", context.getPolyglotContext().getBindings("js").getMember("adaptedSummary").asString());
 
         SameSignatureCallback sameSignature = context.asInterface(
                 context.eval("sameSignature.js", "(value => 'same:' + value)"),
@@ -488,16 +299,6 @@ class GraaljsContextIntegrationTest {
         assertTrue(multiProxy instanceof FarewellCallback);
         assertEquals("proxy:alex", ((GreetingCallback) multiProxy).greet("alex"));
         assertEquals("proxy:alex", ((FarewellCallback) multiProxy).bye("alex"));
-
-        context.eval("runtimeProxy.js", """
-                runtimeProxy = runtime.proxy(
-                    value => 'runtime:' + value,
-                    'cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$GreetingCallback',
-                    'cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$FarewellCallback'
-                );
-                runtimeProxySummary = useGreeting(runtimeProxy) + '|' + useFarewell(runtimeProxy);
-                """);
-        assertEquals("runtime:alex|runtime:alex", context.getPolyglotContext().getBindings("js").getMember("runtimeProxySummary").asString());
     }
 
     @Test
@@ -525,30 +326,13 @@ class GraaljsContextIntegrationTest {
         assertEquals("ctx:direct:alex", directGreeter.format("alex"));
         assertEquals("ctx", directGreeter.prefix());
 
-        context.eval("abstractAdapters.js", """
-                runtimeGreeter = runtime.extend({
-                    greet(name) { return 'runtime:' + name; }
-                }, 'cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$AbstractGreeter', 'rt');
-                javaGreeter = Java.extend(
-                    'cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$AbstractGreeter',
-                    { greet(name) { return 'java:' + name; } },
-                    'java'
-                );
-                runtimeSummary = runtimeGreeter.format('beta');
-                javaSummary = javaGreeter.format('gamma');
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertEquals("rt:runtime:beta", bindings.getMember("runtimeSummary").asString());
-        assertEquals("java:java:gamma", bindings.getMember("javaSummary").asString());
-
         AbstractGreeter missingMethodGreeter = context.asAbstractClass(
                 context.eval("brokenAbstract.js", "({})"),
                 AbstractGreeter.class,
                 "missing"
         );
-        IllegalStateException exception = assertThrows(IllegalStateException.class, () -> missingMethodGreeter.greet("alex"));
-        assertTrue(exception.getMessage().contains("does not implement abstract method"));
+        IllegalStateException missingException = assertThrows(IllegalStateException.class, () -> missingMethodGreeter.greet("alex"));
+        assertTrue(missingException.getMessage().contains("does not implement abstract method"));
 
         Object mixedAdapter = context.asAbstractClass(
                 context.eval("mixedAbstract.js", "({ greet(name) { return 'mix:' + name; }, nickname() { return 'hybrid'; } })"),
@@ -560,113 +344,6 @@ class GraaljsContextIntegrationTest {
         assertTrue(mixedAdapter instanceof Nicknamed);
         assertEquals("mix:mix:alex", ((AbstractGreeter) mixedAdapter).format("alex"));
         assertEquals("hybrid", ((Nicknamed) mixedAdapter).nickname());
-
-        context.eval("mixedRuntimeAdapters.js", """
-                runtimeMixed = runtime.extendWithInterfaces(
-                    {
-                        greet(name) { return 'runtime-mix:' + name; },
-                        nickname() { return 'rt-hybrid'; }
-                    },
-                    'cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$AbstractGreeter',
-                    ['cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$Nicknamed'],
-                    'rtmix'
-                );
-                javaMixed = Java.extendWithInterfaces(
-                    'cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$AbstractGreeter',
-                    {
-                        greet(name) { return 'java-mix:' + name; },
-                        nickname() { return 'java-hybrid'; }
-                    },
-                    ['cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$Nicknamed'],
-                    'javamix'
-                );
-                runtimeMixedSummary = useNicknamedGreeter(runtimeMixed);
-                javaMixedSummary = useNicknamedGreeter(javaMixed);
-                """);
-
-        Value mixedBindings = context.getPolyglotContext().getBindings("js");
-        assertEquals("rtmix:runtime-mix:alex|rt-hybrid", mixedBindings.getMember("runtimeMixedSummary").asString());
-        assertEquals("javamix:java-mix:alex|java-hybrid", mixedBindings.getMember("javaMixedSummary").asString());
-    }
-
-    @Test
-    void shouldExposeJavaAdapterTemplatesAndDirectCreation() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        context.eval("javaAdapter.js", """
-                abstractTemplate = JavaAdapter.type(
-                    'cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$AbstractGreeter',
-                    ['cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$Nicknamed']
-                );
-                abstractKind = abstractTemplate.kind;
-                abstractSuper = abstractTemplate.superClassName;
-                abstractInterfaceCount = abstractTemplate.interfaceNames.length;
-                abstractGreeter = new abstractTemplate({
-                    greet(name) { return 'template:' + name; },
-                    nickname() { return 'templated'; }
-                }, 'tmpl');
-                abstractSummary = useNicknamedGreeter(abstractGreeter);
-
-                directGreeter = JavaAdapter.createWithInterfaces(
-                    'cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$AbstractGreeter',
-                    ['cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$Nicknamed'],
-                    {
-                        greet(name) { return 'direct:' + name; },
-                        nickname() { return 'directed'; }
-                    },
-                    'direct'
-                );
-                directSummary = useNicknamedGreeter(directGreeter);
-
-                interfaceTemplate = JavaAdapter.type(
-                    'cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$GreetingCallback',
-                    ['cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$FarewellCallback']
-                );
-                interfaceKind = interfaceTemplate.kind;
-                interfaceSuper = interfaceTemplate.superClassName === null;
-                interfaceNames = interfaceTemplate.interfaceNames.join('|');
-                interfaceProxy = interfaceTemplate.create(value => 'iface:' + value);
-                interfaceSummary = useGreeting(interfaceProxy) + '|' + useFarewell(interfaceProxy);
-
-                runtimeTemplate = runtime.adapterType(
-                    'cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$AbstractGreeter',
-                    ['cn.qihuang02.graaljs.core.GraaljsContextIntegrationTest$Nicknamed']
-                );
-                runtimeAdapter = new runtimeTemplate({
-                    greet(name) { return 'runtime-template:' + name; },
-                    nickname() { return 'runtime-template-nick'; }
-                }, 'rt');
-                runtimeSummary = useNicknamedGreeter(runtimeAdapter);
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertEquals("abstract", bindings.getMember("abstractKind").asString());
-        assertTrue(bindings.getMember("abstractSuper").asString().endsWith("$AbstractGreeter"));
-        assertEquals(1, bindings.getMember("abstractInterfaceCount").asInt());
-        assertEquals("tmpl:template:alex|templated", bindings.getMember("abstractSummary").asString());
-        assertEquals("direct:direct:alex|directed", bindings.getMember("directSummary").asString());
-        assertEquals("interface", bindings.getMember("interfaceKind").asString());
-        assertTrue(bindings.getMember("interfaceSuper").asBoolean());
-        assertTrue(bindings.getMember("interfaceNames").asString().contains("GreetingCallback"));
-        assertTrue(bindings.getMember("interfaceNames").asString().contains("FarewellCallback"));
-        assertEquals("iface:alex|iface:alex", bindings.getMember("interfaceSummary").asString());
-        assertEquals("rt:runtime-template:alex|runtime-template-nick", bindings.getMember("runtimeSummary").asString());
-    }
-
-    @Test
-    void shouldContinueEventDispatchAfterListenerError() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        context.eval("eventErrorIsolation.js", """
-                secondReceived = false;
-                events.on('test', payload => { throw new Error('listener boom'); });
-                events.on('test', payload => { secondReceived = true; });
-                events.emit('test', { data: 1 });
-                """);
-
-        assertTrue(context.getPolyglotContext().getBindings("js").getMember("secondReceived").asBoolean());
     }
 
     @Test
@@ -710,7 +387,6 @@ class GraaljsContextIntegrationTest {
         TestFactory factory = new TestFactory(tempDir, new TestBindings());
         GraaljsContext context = factory.create(ScriptType.STARTUP);
 
-        // process("a", "b") is ambiguous: both process(Object,String) and process(String,Object) match equally
         assertThrows(GraaljsException.class, () ->
                 context.eval("ambiguous.js", "ambiguousTarget.process('a', 'b');")
         );
@@ -721,7 +397,6 @@ class GraaljsContextIntegrationTest {
         TestFactory factory = new TestFactory(tempDir, new TestBindings());
         GraaljsContext context = factory.create(ScriptType.STARTUP);
 
-        // Test single-arg constructor
         MultiConstructorAbstract singleArg = context.asAbstractClass(
                 context.eval("abstractCtor1.js", "({ work() { return 'single'; } })"),
                 MultiConstructorAbstract.class,
@@ -730,7 +405,6 @@ class GraaljsContextIntegrationTest {
         assertEquals("tag1", singleArg.tag());
         assertEquals("single", singleArg.work());
 
-        // Test two-arg constructor
         MultiConstructorAbstract twoArg = context.asAbstractClass(
                 context.eval("abstractCtor2.js", "({ work() { return 'double'; } })"),
                 MultiConstructorAbstract.class,
@@ -842,157 +516,11 @@ class GraaljsContextIntegrationTest {
     }
 
     @Test
-    void shouldBridgeForgeEventsToJsCallbacks() {
-        IEventBus testBus = BusBuilder.builder().build();
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        factory.setTestEventBus(testBus);
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        // Register a Forge event mapping via the factory hook
-        ForgeEventBridge bridge = factory.getEventBus(ScriptType.STARTUP).getForgeBridge();
-        bridge.registerMapping("test.event", TestForgeEvent.class);
-
-        // Subscribe from JS
-        context.eval("forgeEvents.js", """
-                forgeResult = null;
-                forgeListenerCount = events.onForge("test.event", function(event) {
-                    forgeResult = event.message();
-                });
-                forgeAvailable = events.forgeEvents();
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertEquals(1, bindings.getMember("forgeListenerCount").asInt());
-
-        // Fire the Forge event
-        testBus.post(new TestForgeEvent("hello from forge"));
-
-        assertEquals("hello from forge", bindings.getMember("forgeResult").asString());
-        assertEquals(1, factory.getEventBus(ScriptType.STARTUP).forgeListenerCount("test.event"));
-
-        // Unsubscribe and verify
-        context.eval("forgeUnsubscribe.js", """
-                removable = function(event) {};
-                events.onForge("test.event", removable);
-                beforeRemove = events.forgeListenerCount("test.event");
-                events.offForge("test.event", removable);
-                afterRemove = events.forgeListenerCount("test.event");
-                """);
-
-        assertEquals(2, bindings.getMember("beforeRemove").asInt());
-        assertEquals(1, bindings.getMember("afterRemove").asInt());
-
-        // Close should clean up all Forge listeners
-        factory.close(ScriptType.STARTUP);
-        assertEquals(0, bridge.listenerCount("test.event"));
-    }
-
-    @Test
-    void shouldRejectUnknownForgeEventName() {
-        IEventBus testBus = BusBuilder.builder().build();
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        factory.setTestEventBus(testBus);
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        assertThrows(GraaljsException.class, () ->
-                context.eval("unknownForge.js", "events.onForge('nonexistent', function() {});")
-        );
-    }
-
-    @Test
-    void shouldCancelForgeEventWhenCallbackReturnsFalse() {
-        IEventBus testBus = BusBuilder.builder().build();
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        factory.setTestEventBus(testBus);
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        ForgeEventBridge bridge = factory.getEventBus(ScriptType.STARTUP).getForgeBridge();
-        bridge.registerMapping("test.cancelable", CancelableForgeEvent.class);
-
-        context.eval("cancelEvent.js", """
-                events.onForge("test.cancelable", function(event) {
-                    return false;
-                });
-                """);
-
-        CancelableForgeEvent event = new CancelableForgeEvent("cancel me");
-        testBus.post(event);
-        assertTrue(event.isCanceled(), "Event should be canceled when callback returns false");
-    }
-
-    @Test
-    void shouldCancelForgeEventWhenCallbackReturnsCancelledObject() {
-        IEventBus testBus = BusBuilder.builder().build();
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        factory.setTestEventBus(testBus);
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        ForgeEventBridge bridge = factory.getEventBus(ScriptType.STARTUP).getForgeBridge();
-        bridge.registerMapping("test.cancelable", CancelableForgeEvent.class);
-
-        context.eval("cancelEventObj.js", """
-                events.onForge("test.cancelable", function(event) {
-                    return { cancelled: true };
-                });
-                """);
-
-        CancelableForgeEvent event = new CancelableForgeEvent("cancel me");
-        testBus.post(event);
-        assertTrue(event.isCanceled(), "Event should be canceled when callback returns { cancelled: true }");
-    }
-
-    @Test
-    void shouldSetForgeEventResultFromCallbackReturnValue() {
-        IEventBus testBus = BusBuilder.builder().build();
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        factory.setTestEventBus(testBus);
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        ForgeEventBridge bridge = factory.getEventBus(ScriptType.STARTUP).getForgeBridge();
-        bridge.registerMapping("test.result", ResultForgeEvent.class);
-
-        context.eval("resultEvent.js", """
-                events.onForge("test.result", function(event) {
-                    return "allow";
-                });
-                """);
-
-        ResultForgeEvent event = new ResultForgeEvent("test");
-        testBus.post(event);
-        assertEquals(Event.Result.ALLOW, event.getResult(), "Event result should be ALLOW");
-    }
-
-    @Test
-    void shouldNotCancelNonCancelableEvent() {
-        IEventBus testBus = BusBuilder.builder().build();
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        factory.setTestEventBus(testBus);
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        ForgeEventBridge bridge = factory.getEventBus(ScriptType.STARTUP).getForgeBridge();
-        bridge.registerMapping("test.event", TestForgeEvent.class);
-
-        context.eval("noCancelEvent.js", """
-                events.onForge("test.event", function(event) {
-                    return false;
-                });
-                """);
-
-        // TestForgeEvent is not @Cancelable, so returning false should not throw
-        TestForgeEvent event = new TestForgeEvent("no cancel");
-        testBus.post(event);
-        // No assertion needed — just verify no exception is thrown
-    }
-
-    @Test
     void shouldNotAllowDirectHostObjectMemberAccessWithPublicAccessFalse() {
         TestFactory factory = new TestFactory(tempDir, new TestBindings());
         GraaljsContext context = factory.create(ScriptType.STARTUP);
 
-        // With allowPublicAccess(false), direct host objects should not expose members
-        // unless they go through our proxy layer
         context.eval("hostAccess.js", """
-                // api goes through our proxy layer, so members should be accessible
                 hasRecord = "record" in api;
                 hasVisibleField = "visibleField" in api;
                 """);
@@ -1000,6 +528,274 @@ class GraaljsContextIntegrationTest {
         Value bindings = context.getPolyglotContext().getBindings("js");
         assertTrue(bindings.getMember("hasRecord").asBoolean(), "Proxy-wrapped members should be accessible");
         assertTrue(bindings.getMember("hasVisibleField").asBoolean(), "Proxy-wrapped fields should be accessible");
+    }
+
+    @Test
+    void shouldWrapCallbackArgumentsThroughBridgeLayer() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("bridgeCallback.js", """
+                result = {};
+                callback = {
+                    accept(holder) {
+                        result.hasAlias = "aliasName" in holder;
+                        result.hasHidden = "secretField" in holder;
+                        result.aliasValue = holder.aliasName();
+                        result.publicValue = holder.publicField;
+                    }
+                };
+                """);
+
+        Value callbackValue = context.getPolyglotContext().getBindings("js").getMember("callback");
+        BridgedArgCallback adapted = context.asInterface(callbackValue, BridgedArgCallback.class);
+
+        BridgedArgHolder holder = new BridgedArgHolder();
+        adapted.accept(holder);
+
+        Value result = context.getPolyglotContext().getBindings("js").getMember("result");
+        assertTrue(result.getMember("hasAlias").asBoolean(), "Should see @RemapForJS alias");
+        assertFalse(result.getMember("hasHidden").asBoolean(), "Should not see @HideFromJS field");
+        assertEquals("aliased", result.getMember("aliasValue").asString());
+        assertEquals("visible", result.getMember("publicValue").asString());
+    }
+
+    @Test
+    void shouldBridgeFunctionalInterfaceArgumentsThroughProxy() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("functionalBridge.js", """
+                functionalResult = {};
+                functionalCallback = function(holder) {
+                    functionalResult.hasAlias = "aliasName" in holder;
+                    functionalResult.hasHidden = "secretField" in holder;
+                    functionalResult.aliasValue = holder.aliasName();
+                    functionalResult.publicValue = holder.publicField;
+                };
+                """);
+
+        Value callbackValue = context.getPolyglotContext().getBindings("js").getMember("functionalCallback");
+        BridgedArgCallback adapted = context.asInterface(callbackValue, BridgedArgCallback.class);
+
+        BridgedArgHolder holder = new BridgedArgHolder();
+        adapted.accept(holder);
+
+        Value result = context.getPolyglotContext().getBindings("js").getMember("functionalResult");
+        assertTrue(result.getMember("hasAlias").asBoolean(), "Functional interface should bridge args: @RemapForJS alias visible");
+        assertFalse(result.getMember("hasHidden").asBoolean(), "Functional interface should bridge args: @HideFromJS field hidden");
+        assertEquals("aliased", result.getMember("aliasValue").asString());
+        assertEquals("visible", result.getMember("publicValue").asString());
+    }
+
+    @Test
+    void shouldResetClientEventsStateWhenContextClosed() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+
+        factory.createAndLoad(ScriptType.CLIENT);
+        assertTrue(factory.getContext(ScriptType.CLIENT) != null);
+
+        factory.close(ScriptType.CLIENT);
+        assertNull(factory.getContext(ScriptType.CLIENT));
+
+        factory.createAndLoad(ScriptType.CLIENT);
+        assertTrue(factory.getContext(ScriptType.CLIENT) != null);
+        factory.close(ScriptType.CLIENT);
+    }
+
+    @Test
+    void shouldReadBeanPropertyViaGetter() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("beanRead.js", """
+                beanName = beanTarget.name;
+                beanActive = beanTarget.active;
+                beanReadOnly = beanTarget.readOnly;
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("initial", bindings.getMember("beanName").asString());
+        assertTrue(bindings.getMember("beanActive").asBoolean());
+        assertEquals("readonly-value", bindings.getMember("beanReadOnly").asString());
+    }
+
+    @Test
+    void shouldWriteBeanPropertyViaSetter() {
+        TestBindings testBindings = new TestBindings();
+        TestFactory factory = new TestFactory(tempDir, testBindings);
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("beanWrite.js", """
+                beanTarget.name = "changed";
+                beanTarget.active = false;
+                afterName = beanTarget.name;
+                afterActive = beanTarget.active;
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("changed", bindings.getMember("afterName").asString());
+        assertFalse(bindings.getMember("afterActive").asBoolean());
+        assertEquals("changed", testBindings.beanTarget.getName());
+        assertFalse(testBindings.beanTarget.isActive());
+    }
+
+    @Test
+    void shouldRejectWriteToReadOnlyBeanProperty() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        Exception exception = assertThrows(Exception.class, () ->
+                context.eval("beanReadOnlyWrite.js", "beanTarget.readOnly = 'nope';")
+        );
+        assertTrue(exception.getMessage().contains("Read-only") || exception.getMessage().contains("readOnly")
+                || exception.getCause() != null && exception.getCause().getMessage() != null
+                && exception.getCause().getMessage().contains("Read-only"));
+    }
+
+    @Test
+    void shouldNotSynthesizeBeanPropertyWhenRemapPrefixAliasExists() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("beanPrefix.js", """
+                statusResult = beanWithPrefix.status();
+                countResult = beanWithPrefix.count();
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("ok", bindings.getMember("statusResult").asString());
+        assertEquals(42, bindings.getMember("countResult").asInt());
+    }
+
+    @Test
+    void shouldPreferFieldOverBeanProperty() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("beanFieldPriority.js", """
+                fieldValue = beanWithField.name;
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("field-value", bindings.getMember("fieldValue").asString());
+    }
+
+    @Test
+    void shouldExposeBeanPropertyInHasMemberAndMemberKeys() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("beanHasMember.js", """
+                hasName = "name" in beanTarget;
+                hasActive = "active" in beanTarget;
+                hasReadOnly = "readOnly" in beanTarget;
+                hasNonExistent = "nonExistent" in beanTarget;
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertTrue(bindings.getMember("hasName").asBoolean());
+        assertTrue(bindings.getMember("hasActive").asBoolean());
+        assertTrue(bindings.getMember("hasReadOnly").asBoolean());
+        assertFalse(bindings.getMember("hasNonExistent").asBoolean());
+    }
+
+    @Test
+    void shouldIterateListWithForOf() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("listForOf.js", """
+                result = [];
+                for (const item of bridgeList) {
+                    result.push(item);
+                }
+                bridgeList.push("a");
+                bridgeList.push("b");
+                bridgeList.push("c");
+                result2 = [];
+                for (const item of bridgeList) {
+                    result2.push(item);
+                }
+                forOfResult = result2.join(",");
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("a,b,c", bindings.getMember("forOfResult").asString());
+    }
+
+    @Test
+    void shouldIterateSetWithForOf() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("setForOf.js", """
+                bridgeSet.add("x");
+                bridgeSet.add("y");
+                bridgeSet.add("z");
+                result = [];
+                for (const item of bridgeSet) {
+                    result.push(item);
+                }
+                forOfResult = result.join(",");
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("x,y,z", bindings.getMember("forOfResult").asString());
+    }
+
+    @Test
+    void shouldIteratePureIterableWithForOf() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("iterableForOf.js", """
+                result = [];
+                for (const item of iterableTarget) {
+                    result.push(item);
+                }
+                forOfResult = result.join(",");
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("a,b,c", bindings.getMember("forOfResult").asString());
+    }
+
+    @Test
+    void shouldExposeForEachOnIterableProxy() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("iterableForEach.js", """
+                result = [];
+                iterableTarget.forEach(function(item) {
+                    result.push(item + "!");
+                });
+                forEachResult = result.join(",");
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("a!,b!,c!", bindings.getMember("forEachResult").asString());
+    }
+
+    @Test
+    void shouldIterateNestedIterables() {
+        TestFactory factory = new TestFactory(tempDir, new TestBindings());
+        GraaljsContext context = factory.create(ScriptType.STARTUP);
+
+        context.eval("nestedIterable.js", """
+                bridgeList.push(iterableTarget);
+                result = [];
+                for (const iterable of bridgeList) {
+                    for (const item of iterable) {
+                        result.push(item);
+                    }
+                }
+                nestedResult = result.join(",");
+                """);
+
+        Value bindings = context.getPolyglotContext().getBindings("js");
+        assertEquals("a,b,c", bindings.getMember("nestedResult").asString());
     }
 
     private void writeScript(ScriptType type, String fileName, String content) throws IOException {
@@ -1010,77 +806,75 @@ class GraaljsContextIntegrationTest {
 
     private static class TestFactory extends GraaljsContextFactory {
         private final TestBindings bindings;
-        private IEventBus testEventBus;
 
         private TestFactory(Path scriptRoot, TestBindings bindings) {
             super(scriptRoot);
             this.bindings = bindings;
         }
 
-        void setTestEventBus(IEventBus bus) {
-            this.testEventBus = bus;
-        }
-
         @Override
-        protected IEventBus getForgeEventBus() {
-            return testEventBus != null ? testEventBus : BusBuilder.builder().build();
-        }
-
-        @Override
-        protected void configureBindings(ScriptType type, BindingsBuilder builder) {
-            super.configureBindings(type, builder);
-            builder.add("api", bindings.api)
-                    .add("bridgeMap", bindings.bridgeMap)
-                    .add("bridgeList", bindings.bridgeList)
-                    .add("bridgeSet", bindings.bridgeSet)
-                    .add("customWrapped", bindings.customWrapped)
-                    .add("staticFallback", bindings.staticFallback)
-                    .add("hostErrors", bindings.hostErrors)
-                    .addClass("TestStatics", TestStatics.class)
-                    .addClass("ConstructibleType", ConstructibleType.class)
-                    .addTypedFunction("typedJoin", (context, args) -> args[0] + ":" + args[1], String.class, Integer.class)
-                    .addTypedFunction("typedRecordSummary", (context, args) -> {
-                        SampleRecord record = (SampleRecord) args[0];
-                        return record.name() + ":" + record.count();
-                    }, SampleRecord.class)
-                    .addTypedFunction("useMultiCallback", (context, args) -> {
-                        MultiCallback callback = (MultiCallback) args[0];
-                        return callback.open("input") + "|" + callback.close();
-                    }, MultiCallback.class)
-                    .addTypedFunction("useGreeting", (context, args) -> {
-                        GreetingCallback callback = (GreetingCallback) args[0];
-                        return callback.greet("alex");
-                    }, GreetingCallback.class)
-                    .addTypedFunction("useFarewell", (context, args) -> {
-                        FarewellCallback callback = (FarewellCallback) args[0];
-                        return callback.bye("alex");
-                    }, FarewellCallback.class)
-                    .addTypedFunction("useNicknamedGreeter", (context, args) -> {
-                        AbstractGreeter greeter = (AbstractGreeter) args[0];
-                        Nicknamed nicknamed = (Nicknamed) args[0];
-                        return greeter.format("alex") + "|" + nicknamed.nickname();
-                    }, AbstractGreeter.class)
-                    .addFunction("dynamicArgs", args -> {
-                        StringBuilder builder1 = new StringBuilder();
-                        for (int i = 0; i < args.length; i++) {
-                            if (i > 0) {
-                                builder1.append('|');
-                            }
-                            builder1.append(args[i].as(Object.class));
-                        }
-                        return builder1.toString();
-                    })
-                    .add("visibilitySample", new VisibilitySample())
-                    .add("overloadTarget", new OverloadTarget())
-                    .add("ambiguousTarget", new AmbiguousTarget())
-                    .add("fineOverloadTarget", new FineOverloadTarget())
-                    .addClass("MultiConstructorAbstract", MultiConstructorAbstract.class)
-                    .add("beanTarget", bindings.beanTarget)
-                    .add("beanWithPrefix", bindings.beanWithPrefix)
-                    .add("beanWithField", bindings.beanWithField)
-                    .add("beanStatic", bindings.beanStatic)
-                    .add("iterableTarget", bindings.iterableTarget)
-                    .add("iteratorTarget", bindings.iteratorTarget);
+        protected void configureBindings(ScriptType type, Map<String, Object> bindings) {
+            super.configureBindings(type, bindings);
+            bindings.put("api", this.bindings.api);
+            bindings.put("bridgeMap", this.bindings.bridgeMap);
+            bindings.put("bridgeList", this.bindings.bridgeList);
+            bindings.put("bridgeSet", this.bindings.bridgeSet);
+            bindings.put("customWrapped", this.bindings.customWrapped);
+            bindings.put("staticFallback", this.bindings.staticFallback);
+            bindings.put("hostErrors", this.bindings.hostErrors);
+            bindings.put("TestStatics", TestStatics.class);
+            bindings.put("ConstructibleType", ConstructibleType.class);
+            bindings.put("typedJoin", (ProxyExecutable) args -> {
+                GraaljsContext ctx = this.current();
+                String s = ctx.jsToJava(args[0], String.class);
+                Integer i = ctx.jsToJava(args[1], Integer.class);
+                return s + ":" + i;
+            });
+            bindings.put("typedRecordSummary", (ProxyExecutable) args -> {
+                GraaljsContext ctx = this.current();
+                SampleRecord record = ctx.jsToJava(args[0], SampleRecord.class);
+                return record.name() + ":" + record.count();
+            });
+            bindings.put("useMultiCallback", (ProxyExecutable) args -> {
+                GraaljsContext ctx = this.current();
+                MultiCallback callback = ctx.jsToJava(args[0], MultiCallback.class);
+                return callback.open("input") + "|" + callback.close();
+            });
+            bindings.put("useGreeting", (ProxyExecutable) args -> {
+                GraaljsContext ctx = this.current();
+                GreetingCallback callback = ctx.jsToJava(args[0], GreetingCallback.class);
+                return callback.greet("alex");
+            });
+            bindings.put("useFarewell", (ProxyExecutable) args -> {
+                GraaljsContext ctx = this.current();
+                FarewellCallback callback = ctx.jsToJava(args[0], FarewellCallback.class);
+                return callback.bye("alex");
+            });
+            bindings.put("useNicknamedGreeter", (ProxyExecutable) args -> {
+                GraaljsContext ctx = this.current();
+                AbstractGreeter greeter = ctx.jsToJava(args[0], AbstractGreeter.class);
+                Nicknamed nicknamed = ctx.jsToJava(args[0], Nicknamed.class);
+                return greeter.format("alex") + "|" + nicknamed.nickname();
+            });
+            bindings.put("dynamicArgs", (ProxyExecutable) args -> {
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < args.length; i++) {
+                    if (i > 0) sb.append('|');
+                    sb.append(args[i].as(Object.class));
+                }
+                return sb.toString();
+            });
+            bindings.put("visibilitySample", this.bindings.visibilitySample);
+            bindings.put("overloadTarget", this.bindings.overloadTarget);
+            bindings.put("ambiguousTarget", this.bindings.ambiguousTarget);
+            bindings.put("fineOverloadTarget", this.bindings.fineOverloadTarget);
+            bindings.put("MultiConstructorAbstract", MultiConstructorAbstract.class);
+            bindings.put("beanTarget", this.bindings.beanTarget);
+            bindings.put("beanWithPrefix", this.bindings.beanWithPrefix);
+            bindings.put("beanWithField", this.bindings.beanWithField);
+            bindings.put("beanStatic", this.bindings.beanStatic);
+            bindings.put("iterableTarget", this.bindings.iterableTarget);
+            bindings.put("iteratorTarget", this.bindings.iteratorTarget);
         }
     }
 
@@ -1132,6 +926,10 @@ class GraaljsContextIntegrationTest {
         private final CustomWrappedValue customWrapped = new CustomWrappedValue();
         private final StaticFallbackSample staticFallback = new StaticFallbackSample();
         private final HostErrorSource hostErrors = new HostErrorSource();
+        private final VisibilitySample visibilitySample = new VisibilitySample();
+        private final OverloadTarget overloadTarget = new OverloadTarget();
+        private final AmbiguousTarget ambiguousTarget = new AmbiguousTarget();
+        private final FineOverloadTarget fineOverloadTarget = new FineOverloadTarget();
         private final BeanTarget beanTarget = new BeanTarget();
         private final BeanWithPrefixTarget beanWithPrefix = new BeanWithPrefixTarget();
         private final BeanWithFieldTarget beanWithField = new BeanWithFieldTarget();
@@ -1324,86 +1122,6 @@ class GraaljsContextIntegrationTest {
         public abstract String greet(String name);
     }
 
-    @Test
-    void shouldWrapCallbackArgumentsThroughBridgeLayer() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        // Define a JS function that implements BridgedArgCallback
-        // When Java calls the callback with a BridgedArgHolder, JS should see
-        // the bridged version (aliasName visible, hiddenField not visible)
-        context.eval("bridgeCallback.js", """
-                result = {};
-                callback = {
-                    accept(holder) {
-                        result.hasAlias = "aliasName" in holder;
-                        result.hasHidden = "secretField" in holder;
-                        result.aliasValue = holder.aliasName();
-                        result.publicValue = holder.publicField;
-                    }
-                };
-                """);
-
-        Value callbackValue = context.getPolyglotContext().getBindings("js").getMember("callback");
-        BridgedArgCallback adapted = context.asInterface(callbackValue, BridgedArgCallback.class);
-
-        // Call from Java side with a Java object
-        BridgedArgHolder holder = new BridgedArgHolder();
-        adapted.accept(holder);
-
-        Value result = context.getPolyglotContext().getBindings("js").getMember("result");
-        assertTrue(result.getMember("hasAlias").asBoolean(), "Should see @RemapForJS alias");
-        assertFalse(result.getMember("hasHidden").asBoolean(), "Should not see @HideFromJS field");
-        assertEquals("aliased", result.getMember("aliasValue").asString());
-        assertEquals("visible", result.getMember("publicValue").asString());
-    }
-
-    @Test
-    void shouldBridgeFunctionalInterfaceArgumentsThroughProxy() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        // A JS function adapted as a functional interface should still bridge arguments
-        context.eval("functionalBridge.js", """
-                functionalResult = {};
-                functionalCallback = function(holder) {
-                    functionalResult.hasAlias = "aliasName" in holder;
-                    functionalResult.hasHidden = "secretField" in holder;
-                    functionalResult.aliasValue = holder.aliasName();
-                    functionalResult.publicValue = holder.publicField;
-                };
-                """);
-
-        Value callbackValue = context.getPolyglotContext().getBindings("js").getMember("functionalCallback");
-        BridgedArgCallback adapted = context.asInterface(callbackValue, BridgedArgCallback.class);
-
-        BridgedArgHolder holder = new BridgedArgHolder();
-        adapted.accept(holder);
-
-        Value result = context.getPolyglotContext().getBindings("js").getMember("functionalResult");
-        assertTrue(result.getMember("hasAlias").asBoolean(), "Functional interface should bridge args: @RemapForJS alias visible");
-        assertFalse(result.getMember("hasHidden").asBoolean(), "Functional interface should bridge args: @HideFromJS field hidden");
-        assertEquals("aliased", result.getMember("aliasValue").asString());
-        assertEquals("visible", result.getMember("publicValue").asString());
-    }
-
-    @Test
-    void shouldResetClientEventsStateWhenContextClosed() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-
-        // Simulate: create CLIENT context, then close it externally
-        factory.createAndLoad(ScriptType.CLIENT);
-        assertTrue(factory.getContext(ScriptType.CLIENT) != null);
-
-        factory.close(ScriptType.CLIENT);
-        assertNull(factory.getContext(ScriptType.CLIENT));
-
-        // After close, creating again should work
-        factory.createAndLoad(ScriptType.CLIENT);
-        assertTrue(factory.getContext(ScriptType.CLIENT) != null);
-        factory.close(ScriptType.CLIENT);
-    }
-
     public interface BridgedArgCallback {
         void accept(BridgedArgHolder holder);
     }
@@ -1465,7 +1183,6 @@ class GraaljsContextIntegrationTest {
             return "string:" + value;
         }
 
-        // char-only overload (no String competitor)
         public String acceptChar(char value) {
             return "char:" + value;
         }
@@ -1501,56 +1218,6 @@ class GraaljsContextIntegrationTest {
         public abstract String work();
     }
 
-    public static class TestForgeEvent extends Event {
-        private String message;
-
-        public TestForgeEvent() {
-            this.message = "";
-        }
-
-        public TestForgeEvent(String message) {
-            this.message = message;
-        }
-
-        public String message() {
-            return message;
-        }
-    }
-
-    @net.minecraftforge.eventbus.api.Cancelable
-    public static class CancelableForgeEvent extends Event {
-        private final String message;
-
-        public CancelableForgeEvent() {
-            this.message = "";
-        }
-
-        public CancelableForgeEvent(String message) {
-            this.message = message;
-        }
-
-        public String message() {
-            return message;
-        }
-    }
-
-    @net.minecraftforge.eventbus.api.Event.HasResult
-    public static class ResultForgeEvent extends Event {
-        private final String message;
-
-        public ResultForgeEvent() {
-            this.message = "";
-        }
-
-        public ResultForgeEvent(String message) {
-            this.message = message;
-        }
-
-        public String message() {
-            return message;
-        }
-    }
-
     // ── Bean Property 测试辅助类 ──
 
     public static class BeanTarget {
@@ -1584,9 +1251,6 @@ class GraaljsContextIntegrationTest {
 
     // ── Iterable/Iterator 测试辅助类 ──
 
-    /**
-     * 纯 Iterable（非 List/Set/Map），用于测试 JavaIterableProxy。
-     */
     public static class SimpleIterable implements Iterable<String> {
         private final List<String> items;
 
@@ -1598,210 +1262,5 @@ class GraaljsContextIntegrationTest {
         public java.util.Iterator<String> iterator() {
             return items.iterator();
         }
-    }
-
-    // ── Bean Property 测试 ──
-
-    @Test
-    void shouldReadBeanPropertyViaGetter() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        context.eval("beanRead.js", """
-                beanName = beanTarget.name;
-                beanActive = beanTarget.active;
-                beanReadOnly = beanTarget.readOnly;
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertEquals("initial", bindings.getMember("beanName").asString());
-        assertTrue(bindings.getMember("beanActive").asBoolean());
-        assertEquals("readonly-value", bindings.getMember("beanReadOnly").asString());
-    }
-
-    @Test
-    void shouldWriteBeanPropertyViaSetter() {
-        TestBindings testBindings = new TestBindings();
-        TestFactory factory = new TestFactory(tempDir, testBindings);
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        context.eval("beanWrite.js", """
-                beanTarget.name = "changed";
-                beanTarget.active = false;
-                afterName = beanTarget.name;
-                afterActive = beanTarget.active;
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertEquals("changed", bindings.getMember("afterName").asString());
-        assertFalse(bindings.getMember("afterActive").asBoolean());
-        assertEquals("changed", testBindings.beanTarget.getName());
-        assertFalse(testBindings.beanTarget.isActive());
-    }
-
-    @Test
-    void shouldRejectWriteToReadOnlyBeanProperty() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        // Writing to a read-only bean property should throw
-        Exception exception = assertThrows(Exception.class, () ->
-                context.eval("beanReadOnlyWrite.js", "beanTarget.readOnly = 'nope';")
-        );
-        assertTrue(exception.getMessage().contains("Read-only") || exception.getMessage().contains("readOnly")
-                || exception.getCause() != null && exception.getCause().getMessage() != null
-                && exception.getCause().getMessage().contains("Read-only"));
-    }
-
-    @Test
-    void shouldNotSynthesizeBeanPropertyWhenRemapPrefixAliasExists() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        // @RemapPrefixForJS("get") 已经把 getStatus → status 注册为方法别名
-        // 所以 beanWithPrefix.status 应该返回 JavaMethodProxy（可执行），而不是属性值
-        context.eval("beanPrefix.js", """
-                statusResult = beanWithPrefix.status();
-                countResult = beanWithPrefix.count();
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertEquals("ok", bindings.getMember("statusResult").asString());
-        assertEquals(42, bindings.getMember("countResult").asInt());
-    }
-
-    @Test
-    void shouldPreferFieldOverBeanProperty() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        // BeanWithFieldTarget 有 public field name = "field-value" 和 getName() 返回 "getter-value"
-        // field 应该优先
-        context.eval("beanFieldPriority.js", """
-                fieldValue = beanWithField.name;
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertEquals("field-value", bindings.getMember("fieldValue").asString());
-    }
-
-    @Test
-    void shouldExposeBeanPropertyInHasMemberAndMemberKeys() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        context.eval("beanHasMember.js", """
-                hasName = "name" in beanTarget;
-                hasActive = "active" in beanTarget;
-                hasReadOnly = "readOnly" in beanTarget;
-                hasNonExistent = "nonExistent" in beanTarget;
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertTrue(bindings.getMember("hasName").asBoolean());
-        assertTrue(bindings.getMember("hasActive").asBoolean());
-        assertTrue(bindings.getMember("hasReadOnly").asBoolean());
-        assertFalse(bindings.getMember("hasNonExistent").asBoolean());
-    }
-
-    // ── Iterable/Iterator 测试 ──
-
-    @Test
-    void shouldIterateListWithForOf() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        context.eval("listForOf.js", """
-                result = [];
-                for (const item of bridgeList) {
-                    result.push(item);
-                }
-                bridgeList.push("a");
-                bridgeList.push("b");
-                bridgeList.push("c");
-                result2 = [];
-                for (const item of bridgeList) {
-                    result2.push(item);
-                }
-                forOfResult = result2.join(",");
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertEquals("a,b,c", bindings.getMember("forOfResult").asString());
-    }
-
-    @Test
-    void shouldIterateSetWithForOf() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        context.eval("setForOf.js", """
-                bridgeSet.add("x");
-                bridgeSet.add("y");
-                bridgeSet.add("z");
-                result = [];
-                for (const item of bridgeSet) {
-                    result.push(item);
-                }
-                forOfResult = result.join(",");
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertEquals("x,y,z", bindings.getMember("forOfResult").asString());
-    }
-
-    @Test
-    void shouldIteratePureIterableWithForOf() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        context.eval("iterableForOf.js", """
-                result = [];
-                for (const item of iterableTarget) {
-                    result.push(item);
-                }
-                forOfResult = result.join(",");
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertEquals("a,b,c", bindings.getMember("forOfResult").asString());
-    }
-
-    @Test
-    void shouldExposeForEachOnIterableProxy() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        context.eval("iterableForEach.js", """
-                result = [];
-                iterableTarget.forEach(function(item) {
-                    result.push(item + "!");
-                });
-                forEachResult = result.join(",");
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertEquals("a!,b!,c!", bindings.getMember("forEachResult").asString());
-    }
-
-    @Test
-    void shouldIterateNestedIterables() {
-        TestFactory factory = new TestFactory(tempDir, new TestBindings());
-        GraaljsContext context = factory.create(ScriptType.STARTUP);
-
-        // bridgeList 中放入多个 SimpleIterable
-        context.eval("nestedIterable.js", """
-                bridgeList.push(iterableTarget);
-                result = [];
-                for (const iterable of bridgeList) {
-                    for (const item of iterable) {
-                        result.push(item);
-                    }
-                }
-                nestedResult = result.join(",");
-                """);
-
-        Value bindings = context.getPolyglotContext().getBindings("js");
-        assertEquals("a,b,c", bindings.getMember("nestedResult").asString());
     }
 }

@@ -1,6 +1,5 @@
 package cn.qihuang02.graaljs.core;
 
-import cn.qihuang02.graaljs.binding.BindingsBuilder;
 import org.graalvm.polyglot.Value;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -8,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -73,7 +73,6 @@ class GraaljsModuleTest {
 
         GraaljsContext context = createAndLoad();
         Value bindings = context.getPolyglotContext().getBindings("js");
-        // 如果模块被缓存，b 和 a 共享同一个 count，结果应为 2
         assertEquals(2, bindings.getMember("result").asInt());
         context.close();
     }
@@ -200,7 +199,6 @@ class GraaljsModuleTest {
 
     @Test
     void shouldHandleCircularDependency() throws IOException {
-        // A requires B, B requires A — should not infinite loop
         writeScript("startup_scripts/main.js", """
                 var a = require('./a');
                 resultA = a.name;
@@ -298,7 +296,6 @@ class GraaljsModuleTest {
 
     @Test
     void shouldHandleCircularDependencyWithPartialExports() throws IOException {
-        // A requires B, B requires A — B should see A's partial exports
         writeScript("startup_scripts/main.js", """
                 var b = require('./b');
                 resultBFromA = b.fromA;
@@ -315,7 +312,6 @@ class GraaljsModuleTest {
 
         GraaljsContext context = createAndLoad();
         Value bindings = context.getPolyglotContext().getBindings("js");
-        // B should see A's earlyExport (set before B was required)
         assertEquals("early", bindings.getMember("resultBFromA").asString());
         context.close();
     }
@@ -349,8 +345,8 @@ class GraaljsModuleTest {
         }
 
         @Override
-        protected void configureBindings(ScriptType type, BindingsBuilder builder) {
-            super.configureBindings(type, builder);
+        protected void configureBindings(ScriptType type, Map<String, Object> bindings) {
+            super.configureBindings(type, bindings);
         }
     }
 }

@@ -5,11 +5,7 @@ import cn.qihuang02.graaljs.util.ClassVisibilityContext;
 import cn.qihuang02.graaljs.util.RemapForJS;
 import cn.qihuang02.graaljs.util.RemapPrefixForJS;
 
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
-import java.lang.reflect.Member;
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
+import java.lang.reflect.*;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -41,6 +37,7 @@ public final class CachedClassInfo {
     private final Set<String> instanceMemberKeys;
     private final Set<String> staticMemberKeys;
     private final boolean hidden;
+    private final CachedMemberLookup memberLookup;
 
     CachedClassInfo(CachedClassStorage storage, Class<?> type) {
         this.storage = storage;
@@ -65,6 +62,10 @@ public final class CachedClassInfo {
                 instanceFields.keySet(), instanceMethods.keySet(), instanceBeanProperties.keySet()));
         this.staticMemberKeys = Set.copyOf(joinKeys(
                 staticFields.keySet(), staticMethods.keySet(), staticBeanProperties.keySet()));
+
+        this.memberLookup = hidden ? null : new CachedMemberLookup(
+                instanceFields, staticFields, instanceMethods, staticMethods,
+                instanceBeanProperties, staticBeanProperties, constructors);
     }
 
     public Class<?> type() {
@@ -73,6 +74,13 @@ public final class CachedClassInfo {
 
     public boolean isHidden() {
         return hidden;
+    }
+
+    /**
+     * 返回结构化的成员查找表。
+     */
+    public CachedMemberLookup getMemberLookup() {
+        return memberLookup;
     }
 
     public Field findField(String name, boolean staticOnly) {
@@ -278,7 +286,7 @@ public final class CachedClassInfo {
         return Modifier.isPublic(modifiers) || storage.includeProtected() && Modifier.isProtected(modifiers);
     }
 
-    private boolean allParametersVisible(java.lang.reflect.Executable executable) {
+    private boolean allParametersVisible(Executable executable) {
         for (Class<?> parameterType : executable.getParameterTypes()) {
             if (!storage.visibleToScripts(parameterType, ClassVisibilityContext.ARGUMENT)) {
                 return false;

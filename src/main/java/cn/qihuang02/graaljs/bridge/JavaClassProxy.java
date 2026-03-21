@@ -127,7 +127,8 @@ public class JavaClassProxy extends AbstractReflectiveProxyObject implements Pro
         int bestScore = Integer.MAX_VALUE;
         int bestCount = 0;
 
-        List<Constructor<?>> constructors = cachedClassInfo.constructors();
+        CachedConstructorGroupInfo ctorGroup = lookup != null ? lookup.constructorGroup() : null;
+        List<Constructor<?>> constructors = ctorGroup != null ? ctorGroup.constructors() : List.of();
         for (Constructor<?> constructor : constructors) {
             ConstructorMatch match = tryMatch(constructor, arguments);
             if (match != null) {

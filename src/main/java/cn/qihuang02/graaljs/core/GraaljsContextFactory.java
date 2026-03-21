@@ -1,38 +1,17 @@
 package cn.qihuang02.graaljs.core;
 
-import cn.qihuang02.graaljs.Graaljs;
-import cn.qihuang02.graaljs.binding.BindingsBuilder;
-import cn.qihuang02.graaljs.binding.ConsoleAPI;
-import cn.qihuang02.graaljs.binding.EventBusAPI;
-import cn.qihuang02.graaljs.binding.ForgeEventBridge;
-import cn.qihuang02.graaljs.binding.GsonBridge;
-import cn.qihuang02.graaljs.binding.JavaAPI;
-import cn.qihuang02.graaljs.binding.JavaAdapterAPI;
-import cn.qihuang02.graaljs.binding.RuntimeAPI;
-import cn.qihuang02.graaljs.binding.SchedulerAPI;
 import cn.qihuang02.graaljs.bridge.CachedClassStorage;
 import cn.qihuang02.graaljs.bridge.HostBridgeRegistry;
 import cn.qihuang02.graaljs.bridge.JavaPackageProxy;
 import cn.qihuang02.graaljs.error.ErrorReporter;
 import cn.qihuang02.graaljs.error.LoggingErrorReporter;
-import cn.qihuang02.graaljs.minecraft.MinecraftTypeWrappers;
 import cn.qihuang02.graaljs.typewrap.DirectTypeWrapperFactory;
 import cn.qihuang02.graaljs.typewrap.TypeWrapperFactory;
 import cn.qihuang02.graaljs.typewrap.TypeWrapperValidator;
 import cn.qihuang02.graaljs.typewrap.TypeWrappers;
 import cn.qihuang02.graaljs.util.ClassVisibilityContext;
-import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.event.CommandEvent;
-import net.minecraftforge.event.ServerChatEvent;
-import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.event.entity.living.LivingDeathEvent;
-import net.minecraftforge.event.entity.living.LivingHurtEvent;
-import net.minecraftforge.event.entity.player.PlayerEvent;
-import net.minecraftforge.event.entity.player.PlayerInteractEvent;
-import net.minecraftforge.event.level.BlockEvent;
-import net.minecraftforge.event.level.LevelEvent;
-import net.minecraftforge.eventbus.api.IEventBus;
-import net.minecraftforge.fml.loading.FMLPaths;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.RecordComponent;
@@ -40,7 +19,6 @@ import java.nio.file.Path;
 import java.util.EnumMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -48,6 +26,8 @@ import java.util.Set;
  * GraalJS 上下文工厂与生命周期入口。
  */
 public class GraaljsContextFactory {
+    private static final Logger LOGGER = LoggerFactory.getLogger(GraaljsContextFactory.class);
+
     private static final Set<String> CLASS_BLACKLIST = Set.of(
             "java.lang.Runtime",
             "java.lang.ProcessBuilder",
@@ -71,8 +51,6 @@ public class GraaljsContextFactory {
     private final TypeWrappers typeWrappers;
     private final HostBridgeRegistry hostBridgeRegistry;
     private final Map<ScriptType, GraaljsContext> activeContexts;
-    private final Map<ScriptType, EventBusAPI> eventBuses;
-    private final Map<ScriptType, SchedulerAPI> schedulers;
     private final Map<Class<?>, Object[]> defaultRecordProperties;
     private final Map<Class<?>, Constructor<?>> recordConstructors;
     private final ThreadLocal<GraaljsContext> currentContext;
@@ -80,17 +58,11 @@ public class GraaljsContextFactory {
     private CachedClassStorage cachedClassStorage;
     private ErrorReporter errorReporter;
 
-    public GraaljsContextFactory() {
-        this(FMLPaths.GAMEDIR.get());
-    }
-
     public GraaljsContextFactory(Path scriptRoot) {
         this.scriptRoot = scriptRoot;
         this.typeWrappers = new TypeWrappers();
         this.hostBridgeRegistry = new HostBridgeRegistry();
         this.activeContexts = new EnumMap<>(ScriptType.class);
-        this.eventBuses = new EnumMap<>(ScriptType.class);
-        this.schedulers = new EnumMap<>(ScriptType.class);
         this.defaultRecordProperties = new IdentityHashMap<>();
         this.recordConstructors = new IdentityHashMap<>();
         this.currentContext = new ThreadLocal<>();
@@ -188,7 +160,7 @@ public class GraaljsContextFactory {
     public boolean visibleToScripts(String className, ClassVisibilityContext visibilityContext) {
         for (String blocked : CLASS_BLACKLIST) {
             if (className.startsWith(blocked)) {
-                Graaljs.LOGGER.debug("Denied class {} in visibility context {}", className, visibilityContext);
+                LOGGER.debug("Denied class {} in visibility context {}", className, visibilityContext);
                 return false;
             }
         }
@@ -208,107 +180,41 @@ public class GraaljsContextFactory {
     }
 
     protected void initTypeWrappers(TypeWrappers wrappers) {
-        MinecraftTypeWrappers.registerAll(wrappers);
     }
 
     protected GraaljsContext createContext(ScriptType type) {
         return new GraaljsContext(this, type);
     }
 
-    protected void configureBindings(ScriptType type, BindingsBuilder builder) {
-        builder.add("console", new ConsoleAPI(Graaljs.LOGGER));
-    }
-
     /**
-     * 注册 Forge 事件名到 Event 类的映射。子类可覆盖以添加自定义事件映射。
-     * 默认注册常用的 Minecraft 事件。
+     * 配置脚本绑定。子类可覆盖以添加自定义绑定。
      */
-    protected void configureForgeEvents(ScriptType type, ForgeEventBridge bridge) {
-        // 玩家事件
-        bridge.registerMapping("player.join", PlayerEvent.PlayerLoggedInEvent.class);
-        bridge.registerMapping("player.leave", PlayerEvent.PlayerLoggedOutEvent.class);
-        bridge.registerMapping("player.respawn", PlayerEvent.PlayerRespawnEvent.class);
-        bridge.registerMapping("player.interact.block", PlayerInteractEvent.RightClickBlock.class);
-        bridge.registerMapping("player.interact.entity", PlayerInteractEvent.EntityInteract.class);
-        bridge.registerMapping("player.chat", ServerChatEvent.class);
-
-        // 实体事件
-        bridge.registerMapping("entity.death", LivingDeathEvent.class);
-        bridge.registerMapping("entity.hurt", LivingHurtEvent.class);
-
-        // 世界事件（1.20+ 使用 LevelEvent）
-        bridge.registerMapping("world.load", LevelEvent.Load.class);
-        bridge.registerMapping("world.unload", LevelEvent.Unload.class);
-
-        // 方块事件
-        bridge.registerMapping("block.break", BlockEvent.BreakEvent.class);
-        bridge.registerMapping("block.place", BlockEvent.EntityPlaceEvent.class);
-
-        // 命令事件
-        bridge.registerMapping("command.execute", CommandEvent.class);
-
-        // Tick 事件
-        bridge.registerMapping("server.tick", TickEvent.ServerTickEvent.class);
-        bridge.registerMapping("client.tick", TickEvent.ClientTickEvent.class);
-    }
-
-    /**
-     * 返回 Forge 事件总线。子类可覆盖以提供测试用的 mock 总线。
-     */
-    protected IEventBus getForgeEventBus() {
-        return MinecraftForge.EVENT_BUS;
+    protected void configureBindings(ScriptType type, Map<String, Object> bindings) {
     }
 
     public GraaljsContext create(ScriptType type) {
         close(type);
 
         GraaljsContext context = createContext(type);
-        EventBusAPI eventBus = new EventBusAPI(context);
-        ForgeEventBridge forgeBridge = new ForgeEventBridge(context, getForgeEventBus());
-        configureForgeEvents(type, forgeBridge);
-        eventBus.setForgeBridge(forgeBridge);
-        SchedulerAPI scheduler = new SchedulerAPI(context);
-        BindingsBuilder builder = new BindingsBuilder();
-        configureBindings(type, builder);
-        builder.add("Java", new JavaAPI(this, context));
-        builder.add("JavaAdapter", new JavaAdapterAPI(this, context));
-        builder.add("Packages", createPackageProxy(context, ""));
-        builder.add("java", createPackageProxy(context, "java"));
-        builder.add("javax", createPackageProxy(context, "javax"));
-        builder.add("com", createPackageProxy(context, "com"));
-        builder.add("org", createPackageProxy(context, "org"));
-        builder.add("net", createPackageProxy(context, "net"));
-        builder.add("dev", createPackageProxy(context, "dev"));
-        builder.add("cn", createPackageProxy(context, "cn"));
-        builder.add("events", eventBus);
-        builder.add("scheduler", scheduler);
-        builder.add("runtime", new RuntimeAPI(this, context));
-        builder.add("GSON", new GsonBridge(context));
-        context.initialize(builder.build());
+        Map<String, Object> bindings = new LinkedHashMap<>();
+        configureBindings(type, bindings);
+        context.initialize(Map.copyOf(bindings));
 
         activeContexts.put(type, context);
-        eventBuses.put(type, eventBus);
-        schedulers.put(type, scheduler);
-        Graaljs.LOGGER.info("Created GraalJS context for {}", type.directory);
+        LOGGER.info("Created GraalJS context for {}", type.directory);
         return context;
     }
 
     public GraaljsContext createAndLoad(ScriptType type) {
         GraaljsContext context = create(type);
         context.loadScripts();
-        emitEvent(type, "context.loaded", Map.of(
-                "directory", resolveScriptDirectory(type).toString()
-        ));
+        LOGGER.info("Loaded scripts for {}", type.directory);
         return context;
     }
 
     public GraaljsContext reload(ScriptType type) {
-        Graaljs.LOGGER.info("Reloading GraalJS context for {}", type.directory);
-        GraaljsContext context = createAndLoad(type);
-        emitEvent(type, "context.reloaded", Map.of(
-                "directory", resolveScriptDirectory(type).toString()
-        ));
-        return context;
+        LOGGER.info("Reloading GraalJS context for {}", type.directory);
+        return createAndLoad(type);
     }
 
     public GraaljsContext enter(ScriptType type) {
@@ -328,36 +234,8 @@ public class GraaljsContextFactory {
         return activeContexts.get(type);
     }
 
-    public EventBusAPI getEventBus(ScriptType type) {
-        return eventBuses.get(type);
-    }
-
-    public SchedulerAPI getScheduler(ScriptType type) {
-        return schedulers.get(type);
-    }
-
-    public int tickScheduler(ScriptType type, long currentTimeMs) {
-        SchedulerAPI scheduler = schedulers.get(type);
-        if (scheduler == null) {
-            return 0;
-        }
-        return scheduler.tick(currentTimeMs);
-    }
-
     public JavaPackageProxy createPackageProxy(GraaljsContext context, String packageName) {
         return new JavaPackageProxy(context, this, packageName);
-    }
-
-    public int emitEvent(ScriptType type, String eventName) {
-        return emitEvent(type, eventName, Map.of());
-    }
-
-    public int emitEvent(ScriptType type, String eventName, Object payload) {
-        EventBusAPI eventBus = eventBuses.get(type);
-        if (eventBus == null) {
-            return 0;
-        }
-        return eventBus.emitHost(eventName, createEventEnvelope(type, eventName, payload));
     }
 
     public Class<?> resolveVisibleClass(String className) throws ClassNotFoundException {
@@ -387,23 +265,10 @@ public class GraaljsContextFactory {
     }
 
     public void close(ScriptType type) {
-        GraaljsContext context = activeContexts.get(type);
+        GraaljsContext context = activeContexts.remove(type);
         if (context != null) {
-            emitEvent(type, "context.closing", Map.of(
-                    "directory", resolveScriptDirectory(type).toString()
-            ));
-            EventBusAPI eventBus = eventBuses.get(type);
-            if (eventBus != null) {
-                eventBus.closeForgeBridge();
-            }
-            SchedulerAPI scheduler = schedulers.remove(type);
-            if (scheduler != null) {
-                scheduler.close();
-            }
-            activeContexts.remove(type);
-            eventBuses.remove(type);
             context.close();
-            Graaljs.LOGGER.info("Closed GraalJS context for {}", type.directory);
+            LOGGER.info("Closed GraalJS context for {}", type.directory);
         }
     }
 
@@ -421,13 +286,5 @@ public class GraaljsContextFactory {
         if (currentContext.get() == context) {
             currentContext.remove();
         }
-    }
-
-    private Map<String, Object> createEventEnvelope(ScriptType type, String eventName, Object payload) {
-        Map<String, Object> envelope = new LinkedHashMap<>();
-        envelope.put("name", eventName);
-        envelope.put("scriptType", type.name().toLowerCase(Locale.ROOT));
-        envelope.put("payload", payload);
-        return envelope;
     }
 }
